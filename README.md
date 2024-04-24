@@ -23,8 +23,5 @@ Patched NVIDIA driver with NvFBC enabled. You can find the patch [here](https://
 Since OBS Studio switched from GLX to EGL, NvFBC became non-functional, as it does not support EGL. This is a fundamental issue with NvFBC and can only be fixed by NVIDIA. This plugin spawns a subprocess and uses a shared memory buffer to capture the frame buffer and copy it to OBS Studio. It is not extremely efficient as the buffer is first being copied to the system memory, then to OBS Studio and then again uploaded to the GPU for rendering. However, it is still much much faster than using x11grab or similar methods. The performance impact is basically negligible.
 
 ## Known issues
-- Dead subprocesses are left behind when relaunching the NvFBC capture. Those processes are not alive and do not consume any resources. They are just there. No clue why.
 - Changing any kind of setting will immediately result in the source turning black, until you click `Update settings`. This is because the subprocess is killed and restarted when changing settings.
 - If the subprocess crashes, OBS Studio will not notify you.
-- Additionally, OBS Studio randomly crashes when clicking `Update settings` every now and then. No clue why.
-- Direct capture mode is not supported yet... because it's 2 am and I'm incredibly tired.
