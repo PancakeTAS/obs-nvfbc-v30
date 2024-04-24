@@ -40,6 +40,7 @@ typedef struct {
     bool with_cursor; //!< Capture cursor
     bool push_model; //!< Push model
     int sampling_rate; //!< Sampling rate in ms (only if push_model is disabled)
+    bool direct_capture; //!< Direct capture
 } nvfbc_capture_t; //!< Capture data sent to subprocess for the NvFBC source
 
 static volatile int dl_it = 0; //!< Hack to get the path to the shared object
@@ -97,6 +98,12 @@ static void start_source(void* data, obs_data_t* settings) {
         strchr(capture_data.display_name, ':')[0] = '\0';
     } else {
         capture_data.tracking_type = tracking_type[0] - '0';
+    }
+
+    if (obs_data_get_bool(settings, "direct_capture")) {
+        capture_data.direct_capture = true;
+        capture_data.with_cursor = false;
+        capture_data.push_model = true;
     }
 
     if (obs_data_get_bool(settings, "crop_area")) {
@@ -171,6 +178,12 @@ static void video_render(void* data, gs_effect_t* effect) {
 
 // obs configuration stuff
 
+static bool on_direct_update(obs_properties_t* props, obs_property_t* prop, obs_data_t* settings) {
+    obs_property_set_visible(obs_properties_get(props, "with_cursor"), !obs_data_get_bool(settings, "direct_capture"));
+    obs_property_set_visible(obs_properties_get(props, "sampling_rate"), !obs_data_get_bool(settings, "direct_capture"));
+    return true;
+}
+
 static bool on_crop_update(obs_properties_t* props, obs_property_t* prop, obs_data_t* settings) {
     obs_property_set_visible(obs_properties_get(props, "capture_area"), obs_data_get_bool(settings, "crop_area"));
     return true;
@@ -189,7 +202,6 @@ static obs_properties_t* get_properties(void* unused) {
     obs_property_t* prop = obs_properties_add_list(props, "tracking_type", "Tracking Type", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
     obs_property_list_add_string(prop, "Primary Screen", "0");
     obs_property_list_add_string(prop, "Entire X Screen", "2");
-    obs_properties_add_bool(props, "with_cursor", "Track Cursor");
 
     xcb_connection_t* conn = xcb_connect(NULL, NULL);
     xcb_randr_get_monitors_reply_t* monitors = xcb_randr_get_monitors_reply(conn, xcb_randr_get_monitors(conn, xcb_setup_roots_iterator(xcb_get_setup(conn)).data->root, 1), NULL);
@@ -207,6 +219,10 @@ static obs_properties_t* get_properties(void* unused) {
 
     xcb_disconnect(conn);
     free(monitors);
+
+    prop = obs_properties_add_bool(props, "direct_capture", "Allow direct capture");
+    obs_property_set_modified_callback(prop, on_direct_update);
+    obs_properties_add_bool(props, "with_cursor", "Track Cursor");
 
     // capture area
     prop = obs_properties_add_bool(props, "crop_area", "Crop capture area");
@@ -389,7 +405,8 @@ void nvfbc_main() {
         .frameSize = { .w = nvfbc.frame_width, .h = nvfbc.frame_height },
         .dwOutputId = dwOutputId,
         .dwSamplingRateMs = nvfbc.sampling_rate,
-        .bPushModel = nvfbc.push_model
+        .bPushModel = nvfbc.push_model,
+        .bAllowDirectCapture = nvfbc.direct_capture
     };
     if (nvfbc.has_capture_area) {
         session_params.captureBox.x = nvfbc.capture_x;
