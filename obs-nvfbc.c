@@ -1,6 +1,7 @@
 #include <NvFBC.h>
 
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -109,6 +110,7 @@ static void start_source(void* data, obs_data_t* settings) {
 static void stop_source(void* data) {
     nvfbc_source_t* source_data = (nvfbc_source_t*) data;
     if (!source_data->is_running) return;
+    source_data->is_running = false;
 
     // close shared memory
     munmap(source_data->frame_ptr, source_data->width * source_data->height * 4);
@@ -117,7 +119,6 @@ static void stop_source(void* data) {
 
     // kill subprocess
     kill(source_data->subprocess_pid, SIGINT);
-    source_data->is_running = false;
 }
 
 // rendering stuff
@@ -266,7 +267,13 @@ struct obs_source_info nvfbc_source = {
 
 };
 
+void child_died(int sig) {
+    int status;
+    while (waitpid(-1, &status, WNOHANG) > 0);
+}
+
 bool obs_module_load(void) {
+    signal(SIGCHLD, child_died);
     obs_register_source(&nvfbc_source);
     return true;
 }
