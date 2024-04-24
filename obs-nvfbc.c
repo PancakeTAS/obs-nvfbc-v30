@@ -437,7 +437,7 @@ void nvfbc_main() {
     // capture loop
     NVFBC_TOSYS_GRAB_FRAME_PARAMS tosys_grab_params = {
         .dwVersion = NVFBC_TOSYS_GRAB_FRAME_PARAMS_VER,
-        .dwFlags = NVFBC_TOSYS_GRAB_FLAGS_NOFLAGS
+        .dwFlags = NVFBC_TOSYS_GRAB_FLAGS_NOWAIT_IF_NEW_FRAME_READY
     };
     while (1) {
 
