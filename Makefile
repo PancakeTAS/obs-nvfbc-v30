@@ -21,6 +21,7 @@ $(TARGET).o: $(TARGET).c
 
 
 link: $(TARGET).so $(TARGET).o
+	mkdir -p "$(HOME)/.config/obs-studio/plugins/$(TARGET)/bin/64bit"
 	ln -s "$(PWD)/$(TARGET).so" "$(HOME)/.config/obs-studio/plugins/$(TARGET)/bin/64bit/$(TARGET).so"
 	ln -s "$(PWD)/$(TARGET).o" "$(HOME)/.config/obs-studio/plugins/$(TARGET)/bin/64bit/$(TARGET).o"
 
