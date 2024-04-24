@@ -23,7 +23,7 @@ typedef struct {
     void* frame_ptr; //!< Frame buffer pointer
 
     obs_source_t* source; //!< OBS source
-} nvobs_source_t; //!< Source data for the NvFBC source
+} nvfbc_source_t; //!< Source data for the NvFBC source
 
 typedef struct {
     int tracking_type; //!< Tracking type (default, output, screen)
@@ -33,12 +33,12 @@ typedef struct {
     bool with_cursor; //!< Capture cursor
     bool push_model; //!< Push model
     int sampling_rate; //!< Sampling rate in ms (only if push_model is disabled)
-} nvobs_capture_t; //!< Capture data sent to subprocess for the NvFBC source
+} nvfbc_capture_t; //!< Capture data sent to subprocess for the NvFBC source
 
 static volatile int dl_it = 0; //!< Hack to get the path to the shared object
 
 static void start_source(void* data, obs_data_t* settings) {
-    nvobs_source_t* source_data = (nvobs_source_t*) data;
+    nvfbc_source_t* source_data = (nvfbc_source_t*) data;
     if (source_data->is_running) return;
 
     // create shared memory
@@ -69,7 +69,7 @@ static void start_source(void* data, obs_data_t* settings) {
     }
 
     // prepare shared memory
-    nvobs_capture_t capture_data = {
+    nvfbc_capture_t capture_data = {
         .tracking_type = obs_data_get_int(settings, "tracking_type"),
         .capture_x = obs_data_get_int(settings, "capture_x"),
         .capture_y = obs_data_get_int(settings, "capture_y"),
@@ -82,7 +82,7 @@ static void start_source(void* data, obs_data_t* settings) {
         .sampling_rate = obs_data_get_int(settings, "sampling_rate")
     };
     strncpy(capture_data.display_name, obs_data_get_string(settings, "display_name"), 127);
-    memcpy(source_data->frame_ptr, &capture_data, sizeof(nvobs_capture_t));
+    memcpy(source_data->frame_ptr, &capture_data, sizeof(nvfbc_capture_t));
     blog(LOG_INFO, "Launching subprocess with: { tracking_type: %d, display_name: %s, capture_x: %d, capture_y: %d, capture_width: %d, capture_height: %d, frame_width: %d, frame_height: %d, with_cursor: %d, push_model: %d, sampling_rate: %d }",
         capture_data.tracking_type, capture_data.display_name, capture_data.capture_x, capture_data.capture_y, capture_data.capture_width, capture_data.capture_height, capture_data.frame_width, capture_data.frame_height, capture_data.with_cursor, capture_data.push_model, capture_data.sampling_rate);
 
@@ -106,7 +106,7 @@ static void start_source(void* data, obs_data_t* settings) {
 }
 
 static void stop_source(void* data) {
-    nvobs_source_t* source_data = (nvobs_source_t*) data;
+    nvfbc_source_t* source_data = (nvfbc_source_t*) data;
     if (!source_data->is_running) return;
 
     // close shared memory
@@ -122,7 +122,7 @@ static void stop_source(void* data) {
 // rendering stuff
 
 static void video_render(void* data, gs_effect_t* effect) {
-    nvobs_source_t* source_data = (nvobs_source_t*) data;
+    nvfbc_source_t* source_data = (nvfbc_source_t*) data;
     if (!source_data->is_running) return;
 
     // TODO: fix all this
@@ -153,7 +153,7 @@ static bool on_push_model_update(obs_properties_t* props, obs_property_t* prop, 
 
 static bool on_reload(obs_properties_t* unused, obs_property_t *unused1, void *data) {
     stop_source(data);
-    start_source(data, obs_source_get_settings(((nvobs_source_t*) data)->source));
+    start_source(data, obs_source_get_settings(((nvfbc_source_t*) data)->source));
     return true;
 }
 
@@ -219,7 +219,7 @@ static void get_defaults(obs_data_t* settings) {
 // obs module essentials
 
 static void update(void* data, obs_data_t* settings) {
-    nvobs_source_t* source_data = (nvobs_source_t*) data;
+    nvfbc_source_t* source_data = (nvfbc_source_t*) data;
     source_data->width = obs_data_get_int(settings, "width");
     source_data->height = obs_data_get_int(settings, "height");
 
@@ -227,11 +227,11 @@ static void update(void* data, obs_data_t* settings) {
 }
 
 const char* get_name(void* unused) { return "NvFBC Source"; }
-static uint32_t get_width(void* data) { return ((nvobs_source_t*) data)->width; }
-static uint32_t get_height(void* data) { return ((nvobs_source_t*) data)->height; }
+static uint32_t get_width(void* data) { return ((nvfbc_source_t*) data)->width; }
+static uint32_t get_height(void* data) { return ((nvfbc_source_t*) data)->height; }
 
 static void* create(obs_data_t* settings, obs_source_t* source) {
-    nvobs_source_t* source_data = (nvobs_source_t*) bzalloc(sizeof(nvobs_source_t));
+    nvfbc_source_t* source_data = (nvfbc_source_t*) bzalloc(sizeof(nvfbc_source_t));
     source_data->source = source;
     update(source_data, settings);
     start_source(source_data, settings);
@@ -281,7 +281,7 @@ int main(int argc, char** argv) {
     }
 
     // copy struct
-    nvobs_capture_t nvfbc;
+    nvfbc_capture_t nvfbc;
     void* pointer = mmap(NULL, sizeof(nvfbc), PROT_READ, MAP_SHARED, shm_fd, 0);
     if (pointer == MAP_FAILED) {
         printf("Failed to map shared memory: %s\n", strerror(errno));

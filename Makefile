@@ -1,4 +1,4 @@
-TARGET = obs-nvobs
+TARGET = obs-nvfbc
 
 CC = gcc
 CFLAGS = -Wno-unused-parameter -Wall -Wextra -Werror -std=gnu17 -pedantic -Iinclude
