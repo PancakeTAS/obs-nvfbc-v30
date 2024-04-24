@@ -1,5 +1,5 @@
-# obs-nvobs
-OBS Studio plugin for NVIDIA'S Frame Buffer Capture (NvFBC) API for Linux.
+# obs-nvfbc-v30
+OBS Studio (v30+) plugin for NVIDIA'S Frame Buffer Capture (NvFBC) API for Linux.
 
 NvFBC is an API provided by NVIDIA to capture the frame buffer without using x11grab or similar methods. Since it captures the frame buffer directly, it is much faster and more efficient than other methods. Unlike with XSHM or XComposite, you will not encounter any performance impacts and odd behavior (such as applications suddenly running extremely slow) when capturing the frame buffer with NvFBC.
 
@@ -9,7 +9,7 @@ Patched NVIDIA driver with NvFBC enabled. You can find the patch [here](https://
 ## Installation
 1. Clone the repository
 2. Run `make`
-3. Copy the resulting `obs-nvobs.so` and `obs-nvobs.o` to the OBS Studio plugin directory (usually `~/.config/obs-studio/plugins/bin/64bit/`)
+3. Copy the resulting `obs-nvfbc.so` and `obs-nvfbc.o` to the OBS Studio plugin directory (usually `~/.config/obs-studio/plugins/bin/64bit/`)
 4. Restart OBS Studio
 
 ## Usage
