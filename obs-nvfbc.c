@@ -9,6 +9,8 @@
 #include <ucontext.h>
 #include <threads.h>
 
+#include <xcb/xcb.h>
+#include <xcb/randr.h>
 #include <obs/obs-module.h>
 
 #define __USE_GNU
@@ -32,6 +34,7 @@ typedef struct {
 typedef struct {
     int tracking_type; //!< Tracking type (default, output, screen)
     char display_name[128]; //!< Display name (only if tracking_type is output)
+    bool has_capture_area; //!< Has capture area
     int capture_x, capture_y, capture_width, capture_height; // < Capture area
     int frame_width, frame_height; //!< Frame size
     bool with_cursor; //!< Capture cursor
@@ -80,18 +83,30 @@ static void start_source(void* data, obs_data_t* settings) {
 
     // prepare shared memory
     nvfbc_capture_t capture_data = {
-        .tracking_type = obs_data_get_int(settings, "tracking_type"),
-        .capture_x = obs_data_get_int(settings, "capture_x"),
-        .capture_y = obs_data_get_int(settings, "capture_y"),
-        .capture_width = obs_data_get_int(settings, "capture_width"),
-        .capture_height = obs_data_get_int(settings, "capture_height"),
         .frame_width = obs_data_get_int(settings, "width"),
         .frame_height = obs_data_get_int(settings, "height"),
         .with_cursor = obs_data_get_bool(settings, "with_cursor"),
-        .push_model = obs_data_get_bool(settings, "push_model"),
-        .sampling_rate = obs_data_get_int(settings, "sampling_rate")
+        .sampling_rate = obs_data_get_int(settings, "sampling_rate"),
+        .push_model = obs_data_get_int(settings, "sampling_rate") == 0
     };
-    strncpy(capture_data.display_name, obs_data_get_string(settings, "display_name"), 127);
+
+    const char* tracking_type = obs_data_get_string(settings, "tracking_type");
+    if (tracking_type[0] != '0' && tracking_type[0] != '2') {
+        capture_data.tracking_type = 1;
+        strncpy(capture_data.display_name, obs_data_get_string(settings, "tracking_type"), 127);
+        strchr(capture_data.display_name, ':')[0] = '\0';
+    } else {
+        capture_data.tracking_type = tracking_type[0] - '0';
+    }
+
+    if (obs_data_get_bool(settings, "crop_area")) {
+        capture_data.has_capture_area = true;
+        capture_data.capture_x = obs_data_get_int(settings, "capture_x");
+        capture_data.capture_y = obs_data_get_int(settings, "capture_y");
+        capture_data.capture_width = obs_data_get_int(settings, "capture_width");
+        capture_data.capture_height = obs_data_get_int(settings, "capture_height");
+    }
+
     memcpy(source_data->frame_ptr, &capture_data, sizeof(nvfbc_capture_t));
     blog(LOG_INFO, "Launching subprocess with: { tracking_type: %d, display_name: %s, capture_x: %d, capture_y: %d, capture_width: %d, capture_height: %d, frame_width: %d, frame_height: %d, with_cursor: %d, push_model: %d, sampling_rate: %d }",
         capture_data.tracking_type, capture_data.display_name, capture_data.capture_x, capture_data.capture_y, capture_data.capture_width, capture_data.capture_height, capture_data.frame_width, capture_data.frame_height, capture_data.with_cursor, capture_data.push_model, capture_data.sampling_rate);
@@ -156,13 +171,8 @@ static void video_render(void* data, gs_effect_t* effect) {
 
 // obs configuration stuff
 
-static bool on_tracking_update(obs_properties_t* props, obs_property_t* prop, obs_data_t* settings) {
-    obs_property_set_enabled(obs_properties_get(props, "display_name"), obs_data_get_int(settings, "tracking_type") == 1);
-    return true;
-}
-
-static bool on_push_model_update(obs_properties_t* props, obs_property_t* prop, obs_data_t* settings) {
-    obs_property_set_visible(obs_properties_get(props, "sampling_rate"), !obs_data_get_bool(settings, "push_model"));
+static bool on_crop_update(obs_properties_t* props, obs_property_t* prop, obs_data_t* settings) {
+    obs_property_set_visible(obs_properties_get(props, "capture_area"), obs_data_get_bool(settings, "crop_area"));
     return true;
 }
 
@@ -176,32 +186,44 @@ static obs_properties_t* get_properties(void* unused) {
     obs_properties_t* props = obs_properties_create();
 
     // tracking type
-    obs_property_t* prop = obs_properties_add_list(props, "tracking_type", "Tracking Type", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-    obs_property_set_modified_callback(prop, on_tracking_update);
-    obs_property_list_add_int(prop, "Default", 0);
-    obs_property_list_add_int(prop, "Output", 1);
-    obs_property_list_add_int(prop, "Screen", 2);
-    obs_properties_add_text(props, "display_name", "Display Name", OBS_TEXT_DEFAULT);
+    obs_property_t* prop = obs_properties_add_list(props, "tracking_type", "Tracking Type", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    obs_property_list_add_string(prop, "Primary Screen", "0");
+    obs_property_list_add_string(prop, "Entire X Screen", "2");
+    obs_properties_add_bool(props, "with_cursor", "Track Cursor");
+
+    xcb_connection_t* conn = xcb_connect(NULL, NULL);
+    xcb_randr_get_monitors_reply_t* monitors = xcb_randr_get_monitors_reply(conn, xcb_randr_get_monitors(conn, xcb_setup_roots_iterator(xcb_get_setup(conn)).data->root, 1), NULL);
+    xcb_randr_monitor_info_iterator_t iter = xcb_randr_get_monitors_monitors_iterator(monitors);
+    for (; iter.rem; xcb_randr_monitor_info_next(&iter)) {
+        xcb_randr_monitor_info_t* monitor = iter.data;
+
+        xcb_get_atom_name_reply_t* name = xcb_get_atom_name_reply(conn, xcb_get_atom_name(conn, monitor->name), NULL);
+        char name_str[128];
+        sprintf(name_str, "%.*s: %dx%d+%d+%d", name->name_len, xcb_get_atom_name_name(name), monitor->width, monitor->height, monitor->x, monitor->y);
+        obs_property_list_add_string(prop, name_str, name_str);
+
+        free(name);
+    }
+
+    xcb_disconnect(conn);
+    free(monitors);
 
     // capture area
-    obs_properties_t* capture_props = obs_properties_create();
-    obs_properties_add_int(capture_props, "capture_x", "Capture X", 0, 4096, 2);
-    obs_properties_add_int(capture_props, "capture_y", "Capture Y", 0, 4096, 2);
-    obs_properties_add_int(capture_props, "capture_width", "Capture Width", 0, 4096, 2);
-    obs_properties_add_int(capture_props, "capture_height", "Capture Height", 0, 4096, 2);
-    obs_properties_add_group(props, "capture_area", "Capture Area", OBS_GROUP_NORMAL, capture_props);
+    prop = obs_properties_add_bool(props, "crop_area", "Crop capture area");
+    obs_property_set_modified_callback(prop, on_crop_update);
+    obs_properties_t* crop_props = obs_properties_create();
+    obs_properties_add_int(crop_props, "capture_x", "Capture X", 0, 4096, 2);
+    obs_properties_add_int(crop_props, "capture_y", "Capture Y", 0, 4096, 2);
+    obs_properties_add_int(crop_props, "capture_width", "Capture Width", 0, 4096, 2);
+    obs_properties_add_int(crop_props, "capture_height", "Capture Height", 0, 4096, 2);
+    obs_properties_add_group(props, "capture_area", "Capture Area", OBS_GROUP_NORMAL, crop_props);
 
     // frame size
-    obs_properties_add_int(props, "width", "Width", 0, 4096, 2);
-    obs_properties_add_int(props, "height", "Height", 0, 4096, 2);
-
-    // misc capture options
-    obs_properties_add_bool(props, "with_cursor", "With Cursor");
-
-    // push model
-    prop = obs_properties_add_bool(props, "push_model", "Push Model");
-    obs_property_set_modified_callback(prop, on_push_model_update);
-    obs_properties_add_int(props, "sampling_rate", "Sampling Rate", 0, 1000, 1);
+    obs_properties_t* resize_props = obs_properties_create();
+    obs_properties_add_int(resize_props, "width", "Frame Width", 0, 4096, 2);
+    obs_properties_add_int(resize_props, "height", "Frame Height", 0, 4096, 2);
+    obs_properties_add_int(resize_props, "sampling_rate", "Track Interval (ms)", 0, 1000, 1);
+    obs_properties_add_group(props, "frame_size", "Frame Size", OBS_GROUP_NORMAL, resize_props);
 
     obs_properties_add_button(props, "settings", "Update settings", on_reload);
 
@@ -210,10 +232,10 @@ static obs_properties_t* get_properties(void* unused) {
 
 static void get_defaults(obs_data_t* settings) {
     // tracking type
-    obs_data_set_default_int(settings, "tracking_type", 0);
-    obs_data_set_default_string(settings, "display_name", "");
+    obs_data_set_default_string(settings, "tracking_type", "0");
 
     // capture area
+    obs_data_set_default_bool(settings, "crop_area", false);
     obs_data_set_default_int(settings, "capture_x", 0);
     obs_data_set_default_int(settings, "capture_y", 0);
     obs_data_set_default_int(settings, "capture_width", 1920);
@@ -225,9 +247,6 @@ static void get_defaults(obs_data_t* settings) {
 
     // misc capture options
     obs_data_set_default_bool(settings, "with_cursor", true);
-
-    // push model
-    obs_data_set_default_bool(settings, "push_model", false);
     obs_data_set_default_int(settings, "sampling_rate", 16);
 }
 
@@ -296,7 +315,6 @@ bool obs_module_load(void) {
 // executable stuff
 
 void nvfbc_main() {
-    printf("Starting NvFBC subprocess\n");
     printf("Shared memory name: %s\n", getenv("SHM_NAME"));
 
     // open shared memory
@@ -367,13 +385,18 @@ void nvfbc_main() {
         .dwVersion = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER,
         .eCaptureType = NVFBC_CAPTURE_TO_SYS,
         .bWithCursor = nvfbc.with_cursor,
-        .frameSize = { .w = nvfbc.frame_width, .h = nvfbc.frame_height },
-        .captureBox = { .x = nvfbc.capture_x, .y = nvfbc.capture_y, .w = nvfbc.capture_width, .h = nvfbc.capture_height },
         .eTrackingType = nvfbc.tracking_type,
+        .frameSize = { .w = nvfbc.frame_width, .h = nvfbc.frame_height },
         .dwOutputId = dwOutputId,
         .dwSamplingRateMs = nvfbc.sampling_rate,
         .bPushModel = nvfbc.push_model
     };
+    if (nvfbc.has_capture_area) {
+        session_params.captureBox.x = nvfbc.capture_x;
+        session_params.captureBox.y = nvfbc.capture_y;
+        session_params.captureBox.w = nvfbc.capture_width;
+        session_params.captureBox.h = nvfbc.capture_height;
+    }
     status = fbc.nvFBCCreateCaptureSession(handle, &session_params);
     if (status) {
         printf("nvFBCCreateCaptureSession() failed: %s (%d)\n", fbc.nvFBCGetLastErrorStr(handle), status);
