@@ -9,8 +9,8 @@ Patched NVIDIA driver with NvFBC enabled. You can find the patch [here](https://
 ## Installation
 1. Clone the repository
 2. Run `make`
-3. Copy the resulting `obs-nvfbc.so` and `obs-nvfbc.o` to the OBS Studio plugin directory (usually `~/.config/obs-studio/plugins/bin/64bit/`)
-3. Or, optionally, run `make link` to symlink the files to the OBS Studio plugin directory
+3. Copy the resulting `obs-nvfbc.so` to the OBS Studio plugin directory (usually `~/.config/obs-studio/plugins/bin/64bit/`)
+3. Or, optionally, run `make link` to symlink the library to the OBS Studio plugin directory
 4. Restart OBS Studio
 
 ## Usage
