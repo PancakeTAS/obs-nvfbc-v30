@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <ucontext.h>
+#include <threads.h>
 
 #include <obs/obs-module.h>
 
@@ -25,6 +26,7 @@ typedef struct {
     void* frame_ptr; //!< Frame buffer pointer
 
     obs_source_t* source; //!< OBS source
+    mtx_t lock; //!< Lock to prevent rendering while updating the frame buffer
 } nvfbc_source_t; //!< Source data for the NvFBC source
 
 typedef struct {
@@ -43,11 +45,15 @@ static void start_source(void* data, obs_data_t* settings) {
     nvfbc_source_t* source_data = (nvfbc_source_t*) data;
     if (source_data->is_running) return;
 
+    mtx_lock(&source_data->lock);
+
     // create shared memory
     snprintf(source_data->shm_name, 32, "obs-nvfbc-%d", rand() % 256);
     source_data->shm_fd = shm_open(source_data->shm_name, O_RDWR | O_CREAT, 0666);
     if (source_data->shm_fd == -1) {
         blog(LOG_ERROR, "Failed to open shared memory: %s", strerror(errno));
+
+        mtx_unlock(&source_data->lock);
         return;
     }
 
@@ -57,6 +63,7 @@ static void start_source(void* data, obs_data_t* settings) {
 
         close(source_data->shm_fd);
         shm_unlink(source_data->shm_name);
+        mtx_unlock(&source_data->lock);
         return;
     }
 
@@ -67,6 +74,7 @@ static void start_source(void* data, obs_data_t* settings) {
 
         close(source_data->shm_fd);
         shm_unlink(source_data->shm_name);
+        mtx_unlock(&source_data->lock);
         return;
     }
 
@@ -105,11 +113,14 @@ static void start_source(void* data, obs_data_t* settings) {
 
     source_data->subprocess_pid = pid;
     source_data->is_running = true;
+
+    mtx_unlock(&source_data->lock);
 }
 
 static void stop_source(void* data) {
     nvfbc_source_t* source_data = (nvfbc_source_t*) data;
     if (!source_data->is_running) return;
+    mtx_lock(&source_data->lock);
     source_data->is_running = false;
 
     // close shared memory
@@ -119,6 +130,8 @@ static void stop_source(void* data) {
 
     // kill subprocess
     kill(source_data->subprocess_pid, SIGINT);
+    waitpid(source_data->subprocess_pid, NULL, 0);
+    mtx_unlock(&source_data->lock);
 }
 
 // rendering stuff
@@ -127,10 +140,10 @@ static void video_render(void* data, gs_effect_t* effect) {
     nvfbc_source_t* source_data = (nvfbc_source_t*) data;
     if (!source_data->is_running) return;
 
-    // TODO: fix all this
-
+    mtx_lock(&source_data->lock);
     gs_texture_t* texture = gs_texture_create(source_data->width, source_data->height, GS_BGRA, 1, (const uint8_t **) &source_data->frame_ptr, 0);
-    effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+    mtx_unlock(&source_data->lock);
+
     effect = obs_get_base_effect(OBS_EFFECT_OPAQUE);
     gs_eparam_t* image = gs_effect_get_param_by_name(effect, "image");
     gs_effect_set_texture(image, texture);
@@ -235,6 +248,7 @@ static uint32_t get_height(void* data) { return ((nvfbc_source_t*) data)->height
 static void* create(obs_data_t* settings, obs_source_t* source) {
     nvfbc_source_t* source_data = (nvfbc_source_t*) bzalloc(sizeof(nvfbc_source_t));
     source_data->source = source;
+    mtx_init(&source_data->lock, mtx_plain);
     update(source_data, settings);
     start_source(source_data, settings);
     return source_data;
@@ -242,6 +256,7 @@ static void* create(obs_data_t* settings, obs_source_t* source) {
 
 static void destroy(void* data) {
     stop_source(data);
+    mtx_destroy(&((nvfbc_source_t*) data)->lock);
     bfree(data);
 }
 
