@@ -2,7 +2,8 @@ TARGET = obs-nvfbc
 
 CC = gcc
 CFLAGS = -Wno-unused-parameter -Wall -Wextra -Werror -std=gnu17 -pedantic -Iinclude
-LDFLAGS = -lnvidia-fbc -ldl -lobs
+LDFLAGS = -nostartfiles -shared -fPIC -Wl,--entry=lib_main
+LIBS = -lnvidia-fbc -ldl -lobs
 
 ifndef PROD
 CFLAGS += -g
@@ -11,27 +12,20 @@ CFLAGS += -O3 -march=native -mtune=native
 LDLAGS += -flto=auto
 endif
 
-all: $(TARGET).so $(TARGET).o
-
 $(TARGET).so: $(TARGET).c
-	$(CC) $(CFLAGS) $(LDFLAGS) -shared -fPIC $^ -o $@
+	$(CC) $(CFLAGS) $(LIBS) $(LDFLAGS) $^ -o $@
 
-$(TARGET).o: $(TARGET).c
-	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
-
-
-link: $(TARGET).so $(TARGET).o
+link: $(TARGET).so
 	mkdir -p "$(HOME)/.config/obs-studio/plugins/$(TARGET)/bin/64bit"
 	ln -s "$(PWD)/$(TARGET).so" "$(HOME)/.config/obs-studio/plugins/$(TARGET)/bin/64bit/$(TARGET).so"
-	ln -s "$(PWD)/$(TARGET).o" "$(HOME)/.config/obs-studio/plugins/$(TARGET)/bin/64bit/$(TARGET).o"
 
-run: $(TARGET).so $(TARGET).o
+run: $(TARGET).so
 	obs
 
-debug: $(TARGET).so $(TARGET).o
+debug: $(TARGET).so
 	gdb obs
 
 clean:
-	rm -f $(TARGET).so $(TARGET).o
+	rm -f $(TARGET).so
 
 .PHONY: link run debug clean

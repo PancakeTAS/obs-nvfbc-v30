@@ -1,5 +1,4 @@
 # object files
-*.o
 *.so
 
 # vscode stuff

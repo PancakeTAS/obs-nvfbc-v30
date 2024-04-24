@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <unistd.h>
+#include <ucontext.h>
 
 #include <obs/obs-module.h>
 
@@ -95,9 +96,9 @@ static void start_source(void* data, obs_data_t* settings) {
 
         // launch self as subprocess
         char* path = strdup(dlinfo.dli_fname);
-        path[strlen(path) - 2] = 'o';
-        path[strlen(path) - 1] = '\0';
-        execvp(path, (char* const[]) { path, source_data->shm_name, NULL });
+        setenv("SHM_NAME", source_data->shm_name, 1);
+        extern char** environ;
+        execve(path, (char* const[]) { path, NULL }, environ);
         return;
     }
 
@@ -272,9 +273,12 @@ bool obs_module_load(void) {
 
 // executable stuff
 
-int main(int argc, char** argv) {
+void nvfbc_main() {
+    printf("Starting NvFBC subprocess\n");
+    printf("Shared memory name: %s\n", getenv("SHM_NAME"));
+
     // open shared memory
-    int shm_fd = shm_open(argv[1], O_RDWR, 0666);
+    int shm_fd = shm_open(getenv("SHM_NAME"), O_RDWR, 0666);
     if (shm_fd == -1) {
         printf("Failed to open shared memory: %s\n", strerror(errno));
         exit(1);
@@ -388,6 +392,28 @@ int main(int argc, char** argv) {
     }
 
     exit(0);
-    return 0;
-
 }
+
+// (warning very hacky stuff ahead)
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+
+const char my_interp[] __attribute__((section(".interp"))) = "/lib64/ld-linux-x86-64.so.2";
+
+void* stack_ptr;
+ucontext_t ctx, old_ctx;
+
+int lib_main(int argc, char** argv) {
+    // replace stack
+    stack_ptr = malloc(1024 * 1024);
+    getcontext(&ctx);
+    ctx.uc_stack.ss_sp = stack_ptr;
+    ctx.uc_stack.ss_size = 1024 * 1024;
+    ctx.uc_link = &old_ctx;
+    makecontext(&ctx, nvfbc_main, 0);
+    swapcontext(&old_ctx, &ctx);
+    return 0;
+}
+
+#pragma GCC diagnostic pop
