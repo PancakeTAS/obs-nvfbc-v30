@@ -2,7 +2,7 @@ TARGET = obs-nvfbc
 
 CC = gcc
 CFLAGS = -Wno-unused-parameter -Wall -Wextra -Werror -std=gnu17 -pedantic -Iinclude
-LDFLAGS = -nostartfiles -shared -fPIC -Wl,--entry=lib_main
+LDFLAGS = -shared -fPIC
 LIBS = -lnvidia-fbc -ldl -lobs
 
 ifndef PROD

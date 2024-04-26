@@ -19,19 +19,6 @@
 OBS_DECLARE_MODULE()
 
 typedef struct {
-    int width, height; //!< Resolution of the OBS source
-
-    bool is_running; //!< Is the NvFBC subprocess running
-    pid_t subprocess_pid; //!< NvFBC subprocess PID
-    char shm_name[32]; //!< Shared memory name
-    int shm_fd; //!< Shared memory file descriptor
-    void* frame_ptr; //!< Frame buffer pointer
-
-    obs_source_t* source; //!< OBS source
-    mtx_t lock; //!< Lock to prevent rendering while updating the frame buffer
-} nvfbc_source_t; //!< Source data for the NvFBC source
-
-typedef struct {
     int tracking_type; //!< Tracking type (default, output, screen)
     char display_name[128]; //!< Display name (only if tracking_type is output)
     bool has_capture_area; //!< Has capture area
@@ -43,46 +30,24 @@ typedef struct {
     bool direct_capture; //!< Direct capture
 } nvfbc_capture_t; //!< Capture data sent to subprocess for the NvFBC source
 
-static volatile int dl_it = 0; //!< Hack to get the path to the shared object
+typedef struct {
+    int width, height; //!< Resolution of the OBS source
+
+    bool should_run; //!< Should NvFBC be running
+    void* frame_ptr; //!< Frame buffer pointer
+
+    obs_source_t* source; //!< OBS source
+    mtx_t lock; //!< Lock to prevent rendering while updating the frame buffer
+    thrd_t thread; //!< Thread to capture frames
+    nvfbc_capture_t capture_data; //!< Capture data sent to subprocess
+} nvfbc_source_t; //!< Source data for the NvFBC source
 
 static void start_source(void* data, obs_data_t* settings) {
     nvfbc_source_t* source_data = (nvfbc_source_t*) data;
-    if (source_data->is_running) return;
+    if (source_data->should_run) return;
 
     mtx_lock(&source_data->lock);
 
-    // create shared memory
-    snprintf(source_data->shm_name, 32, "obs-nvfbc-%d", rand() % 256);
-    source_data->shm_fd = shm_open(source_data->shm_name, O_RDWR | O_CREAT, 0666);
-    if (source_data->shm_fd == -1) {
-        blog(LOG_ERROR, "Failed to open shared memory: %s", strerror(errno));
-
-        mtx_unlock(&source_data->lock);
-        return;
-    }
-
-    // truncate shared memory
-    if (ftruncate(source_data->shm_fd, source_data->width * source_data->height * 4) == -1) {
-        blog(LOG_ERROR, "Failed to truncate shared memory: %s", strerror(errno));
-
-        close(source_data->shm_fd);
-        shm_unlink(source_data->shm_name);
-        mtx_unlock(&source_data->lock);
-        return;
-    }
-
-    // map shared memory
-    source_data->frame_ptr = mmap(NULL, source_data->width * source_data->height * 4, PROT_READ | PROT_WRITE, MAP_SHARED, source_data->shm_fd, 0);
-    if (source_data->frame_ptr == MAP_FAILED) {
-        blog(LOG_ERROR, "Failed to map shared memory: %s", strerror(errno));
-
-        close(source_data->shm_fd);
-        shm_unlink(source_data->shm_name);
-        mtx_unlock(&source_data->lock);
-        return;
-    }
-
-    // prepare shared memory
     nvfbc_capture_t capture_data = {
         .frame_width = obs_data_get_int(settings, "width"),
         .frame_height = obs_data_get_int(settings, "height"),
@@ -114,45 +79,19 @@ static void start_source(void* data, obs_data_t* settings) {
         capture_data.capture_height = obs_data_get_int(settings, "capture_height");
     }
 
-    memcpy(source_data->frame_ptr, &capture_data, sizeof(nvfbc_capture_t));
-    blog(LOG_INFO, "Launching subprocess with: { tracking_type: %d, display_name: %s, capture_x: %d, capture_y: %d, capture_width: %d, capture_height: %d, frame_width: %d, frame_height: %d, with_cursor: %d, push_model: %d, sampling_rate: %d }",
-        capture_data.tracking_type, capture_data.display_name, capture_data.capture_x, capture_data.capture_y, capture_data.capture_width, capture_data.capture_height, capture_data.frame_width, capture_data.frame_height, capture_data.with_cursor, capture_data.push_model, capture_data.sampling_rate);
+    memcpy(&source_data->capture_data, &capture_data, sizeof(nvfbc_capture_t));
+    source_data->frame_ptr = malloc(source_data->width * source_data->height * 4);
 
-    // launch subprocess
-    pid_t pid = fork();
-    if (pid == 0) {
-        // get path to current shared object
-        Dl_info dlinfo;
-        dladdr((const void*) &dl_it, &dlinfo);
-
-        // launch self as subprocess
-        char* path = strdup(dlinfo.dli_fname);
-        setenv("SHM_NAME", source_data->shm_name, 1);
-        extern char** environ;
-        execve(path, (char* const[]) { path, NULL }, environ);
-        return;
-    }
-
-    source_data->subprocess_pid = pid;
-    source_data->is_running = true;
+    source_data->should_run = true;
 
     mtx_unlock(&source_data->lock);
 }
 
 static void stop_source(void* data) {
     nvfbc_source_t* source_data = (nvfbc_source_t*) data;
-    if (!source_data->is_running) return;
+    if (!source_data->should_run) return;
     mtx_lock(&source_data->lock);
-    source_data->is_running = false;
-
-    // close shared memory
-    munmap(source_data->frame_ptr, source_data->width * source_data->height * 4);
-    close(source_data->shm_fd);
-    shm_unlink(source_data->shm_name);
-
-    // kill subprocess
-    kill(source_data->subprocess_pid, SIGINT);
-    waitpid(source_data->subprocess_pid, NULL, 0);
+    source_data->should_run = false;
     mtx_unlock(&source_data->lock);
 }
 
@@ -160,7 +99,7 @@ static void stop_source(void* data) {
 
 static void video_render(void* data, gs_effect_t* effect) {
     nvfbc_source_t* source_data = (nvfbc_source_t*) data;
-    if (!source_data->is_running) return;
+    if (!source_data->should_run) return;
 
     mtx_lock(&source_data->lock);
     gs_texture_t* texture = gs_texture_create(source_data->width, source_data->height, GS_BGRA, 1, (const uint8_t **) &source_data->frame_ptr, 0);
@@ -174,6 +113,83 @@ static void video_render(void* data, gs_effect_t* effect) {
         gs_draw_sprite(texture, 0, source_data->width, source_data->height);
 
     gs_texture_destroy(texture);
+}
+
+static int capture_thread(void* data) {
+    nvfbc_source_t* source_data = (nvfbc_source_t*) data;
+    nvfbc_capture_t* capture_data = &source_data->capture_data;
+
+    // create nvfbc
+    NVFBC_API_FUNCTION_LIST fbc = { .dwVersion = NVFBC_VERSION };
+    NVFBC_SESSION_HANDLE handle;
+    NVFBC_GET_STATUS_PARAMS status = { .dwVersion = NVFBC_GET_STATUS_PARAMS_VER };
+    NvFBCCreateInstance(&fbc);
+    NvFBCCreateHandle(&handle, &(NVFBC_CREATE_HANDLE_PARAMS) { .dwVersion = NVFBC_CREATE_HANDLE_PARAMS_VER });
+    NvFBCGetStatus(handle, &status);
+
+    while (true) {
+        if (!source_data->should_run) {
+            thrd_sleep(&(struct timespec) { .tv_sec = 0, .tv_nsec = 10000000 }, NULL);
+            continue;
+        }
+
+        // find display if using tracking type 1
+        int dwOutputId = 0;
+        if (capture_data->tracking_type == 1) {
+            for (uint32_t i = 0; i < status.dwOutputNum; i++) {
+                if (strncmp(capture_data->display_name, status.outputs[i].name, 127) == 0) {
+                    dwOutputId = status.outputs[i].dwId;
+                    break;
+                }
+            }
+        }
+
+        // create capture session
+        NVFBC_CREATE_CAPTURE_SESSION_PARAMS session_params = {
+            .dwVersion = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER,
+            .eCaptureType = NVFBC_CAPTURE_TO_SYS,
+            .bWithCursor = capture_data->with_cursor,
+            .eTrackingType = capture_data->tracking_type,
+            .frameSize = { .w = capture_data->frame_width, .h = capture_data->frame_height },
+            .dwOutputId = dwOutputId,
+            .dwSamplingRateMs = capture_data->sampling_rate,
+            .bPushModel = capture_data->push_model,
+            .bAllowDirectCapture = capture_data->direct_capture
+        };
+        if (capture_data->has_capture_area) {
+            session_params.captureBox.x = capture_data->capture_x;
+            session_params.captureBox.y = capture_data->capture_y;
+            session_params.captureBox.w = capture_data->capture_width;
+            session_params.captureBox.h = capture_data->capture_height;
+        }
+        fbc.nvFBCCreateCaptureSession(handle, &session_params);
+
+        // setup capture session
+        void* buffer;
+        NVFBC_TOSYS_SETUP_PARAMS tosys_params = {
+            .dwVersion = NVFBC_TOSYS_SETUP_PARAMS_VER,
+            .eBufferFormat = NVFBC_BUFFER_FORMAT_BGRA,
+            .ppBuffer = &buffer
+        };
+        fbc.nvFBCToSysSetUp(handle, &tosys_params);
+
+        // capture loop
+        NVFBC_TOSYS_GRAB_FRAME_PARAMS tosys_grab_params = {
+            .dwVersion = NVFBC_TOSYS_GRAB_FRAME_PARAMS_VER,
+            .dwFlags = NVFBC_TOSYS_GRAB_FLAGS_NOWAIT_IF_NEW_FRAME_READY
+        };
+        while (source_data->should_run) {
+            fbc.nvFBCToSysGrabFrame(handle, &tosys_grab_params);
+            memcpy(source_data->frame_ptr, buffer, source_data->width * source_data->height * 4);
+        }
+
+        // cleanup
+        fbc.nvFBCDestroyCaptureSession(handle, &(NVFBC_DESTROY_CAPTURE_SESSION_PARAMS) { .dwVersion = NVFBC_DESTROY_CAPTURE_SESSION_PARAMS_VER });
+        free(source_data->frame_ptr);
+
+    }
+
+    return 0;
 }
 
 // obs configuration stuff
@@ -285,7 +301,11 @@ static void* create(obs_data_t* settings, obs_source_t* source) {
     source_data->source = source;
     mtx_init(&source_data->lock, mtx_plain);
     update(source_data, settings);
+
+    thrd_create(&source_data->thread, capture_thread, source_data);
+    thrd_detach(source_data->thread);
     start_source(source_data, settings);
+
     return source_data;
 }
 
@@ -314,168 +334,9 @@ struct obs_source_info nvfbc_source = {
 
     .get_width = get_width,
     .get_height = get_height,
-
 };
 
-void child_died(int sig) {
-    int status;
-    while (waitpid(-1, &status, WNOHANG) > 0);
-}
-
 bool obs_module_load(void) {
-    signal(SIGCHLD, child_died);
     obs_register_source(&nvfbc_source);
     return true;
 }
-
-// executable stuff
-
-void nvfbc_main() {
-    printf("Shared memory name: %s\n", getenv("SHM_NAME"));
-
-    // open shared memory
-    int shm_fd = shm_open(getenv("SHM_NAME"), O_RDWR, 0666);
-    if (shm_fd == -1) {
-        printf("Failed to open shared memory: %s\n", strerror(errno));
-        exit(1);
-    }
-
-    // copy struct
-    nvfbc_capture_t nvfbc;
-    void* pointer = mmap(NULL, sizeof(nvfbc), PROT_READ, MAP_SHARED, shm_fd, 0);
-    if (pointer == MAP_FAILED) {
-        printf("Failed to map shared memory: %s\n", strerror(errno));
-        exit(1);
-    }
-    memcpy(&nvfbc, pointer, sizeof(nvfbc));
-
-    // reopen shared memory with full size
-    munmap(pointer, sizeof(nvfbc));
-    pointer = mmap(NULL, nvfbc.frame_width * nvfbc.frame_height * 4, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (pointer == MAP_FAILED) {
-        printf("Failed to map shared memory: %s\n", strerror(errno));
-        exit(1);
-    }
-    printf("Mapped shared memory\n");
-
-    // create nvfbc instance
-    NVFBC_API_FUNCTION_LIST fbc = { .dwVersion = NVFBC_VERSION };
-
-    NVFBCSTATUS status = NvFBCCreateInstance(&fbc);
-    if (status) {
-        printf("NvFBCCreateInstance() failed: %d\n", status);
-        exit(1);
-    }
-
-    NVFBC_SESSION_HANDLE handle;
-    status = fbc.nvFBCCreateHandle(&handle, &(NVFBC_CREATE_HANDLE_PARAMS) { .dwVersion = NVFBC_CREATE_HANDLE_PARAMS_VER });
-    if (status) {
-        printf("nvFBCCreateHandle() failed: %d\n", status);
-        exit(1);
-    }
-
-    printf("Created NvFBC instance\n");
-
-    // get status params if needed
-    int dwOutputId = 0;
-    if (nvfbc.tracking_type == 1) {
-        NVFBC_GET_STATUS_PARAMS status_params = { .dwVersion = NVFBC_GET_STATUS_PARAMS_VER };
-        status = fbc.nvFBCGetStatus(handle, &status_params);
-        if (status) {
-            printf("nvFBCGetStatus() failed: %s (%d)\n", fbc.nvFBCGetLastErrorStr(handle), status);
-            exit(1);
-        }
-
-        // find output id
-        for (uint32_t i = 0; i < status_params.dwOutputNum; i++) {
-            if (strcmp(nvfbc.display_name, status_params.outputs[i].name) == 0) {
-                dwOutputId = status_params.outputs[i].dwId;
-                break;
-            }
-        }
-        printf("Found output id: %d\n", dwOutputId);
-    }
-
-    // create capture session
-    NVFBC_CREATE_CAPTURE_SESSION_PARAMS session_params = {
-        .dwVersion = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER,
-        .eCaptureType = NVFBC_CAPTURE_TO_SYS,
-        .bWithCursor = nvfbc.with_cursor,
-        .eTrackingType = nvfbc.tracking_type,
-        .frameSize = { .w = nvfbc.frame_width, .h = nvfbc.frame_height },
-        .dwOutputId = dwOutputId,
-        .dwSamplingRateMs = nvfbc.sampling_rate,
-        .bPushModel = nvfbc.push_model,
-        .bAllowDirectCapture = nvfbc.direct_capture
-    };
-    if (nvfbc.has_capture_area) {
-        session_params.captureBox.x = nvfbc.capture_x;
-        session_params.captureBox.y = nvfbc.capture_y;
-        session_params.captureBox.w = nvfbc.capture_width;
-        session_params.captureBox.h = nvfbc.capture_height;
-    }
-    status = fbc.nvFBCCreateCaptureSession(handle, &session_params);
-    if (status) {
-        printf("nvFBCCreateCaptureSession() failed: %s (%d)\n", fbc.nvFBCGetLastErrorStr(handle), status);
-        exit(1);
-    }
-
-    void* buffer;
-    NVFBC_TOSYS_SETUP_PARAMS tosys_params = {
-        .dwVersion = NVFBC_TOSYS_SETUP_PARAMS_VER,
-        .eBufferFormat = NVFBC_BUFFER_FORMAT_BGRA,
-        .ppBuffer = &buffer
-    };
-    status = fbc.nvFBCToSysSetUp(handle, &tosys_params);
-    if (status) {
-        printf("nvFBCToSysSetUp() failed: %s (%d)\n", fbc.nvFBCGetLastErrorStr(handle), status);
-        exit(1);
-    }
-
-    printf("Created capture session\n");
-
-    // capture loop
-    NVFBC_TOSYS_GRAB_FRAME_PARAMS tosys_grab_params = {
-        .dwVersion = NVFBC_TOSYS_GRAB_FRAME_PARAMS_VER,
-        .dwFlags = NVFBC_TOSYS_GRAB_FLAGS_NOWAIT_IF_NEW_FRAME_READY
-    };
-    while (1) {
-
-        // grab frame
-        status = fbc.nvFBCToSysGrabFrame(handle, &tosys_grab_params);
-        if (status) {
-            printf("nvFBCToSysGrabFrame() failed: %s (%d)\n", fbc.nvFBCGetLastErrorStr(handle), status);
-            exit(1);
-        }
-
-        // copy frame
-        memcpy(pointer, buffer, nvfbc.frame_width * nvfbc.frame_height * 4);
-
-    }
-
-    exit(0);
-}
-
-// (warning very hacky stuff ahead)
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
-
-const char my_interp[] __attribute__((section(".interp"))) = "/lib64/ld-linux-x86-64.so.2";
-
-void* stack_ptr;
-ucontext_t ctx, old_ctx;
-
-int lib_main(int argc, char** argv) {
-    // replace stack
-    stack_ptr = malloc(1024 * 1024);
-    getcontext(&ctx);
-    ctx.uc_stack.ss_sp = stack_ptr;
-    ctx.uc_stack.ss_size = 1024 * 1024;
-    ctx.uc_link = &old_ctx;
-    makecontext(&ctx, nvfbc_main, 0);
-    swapcontext(&old_ctx, &ctx);
-    return 0;
-}
-
-#pragma GCC diagnostic pop
