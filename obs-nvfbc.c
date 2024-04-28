@@ -1,5 +1,5 @@
+#define _GNU_SOURCE
 #include <NvFBC.h>
-
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <errno.h>
@@ -9,12 +9,24 @@
 #include <ucontext.h>
 #include <threads.h>
 
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GL/glx.h>
+#include <GL/gl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
+#include <dlfcn.h>
+
 #include <xcb/xcb.h>
 #include <xcb/randr.h>
 #include <obs/obs-module.h>
 
-#define __USE_GNU
 #include <link.h>
+
+#define GLX_NAME "libGLX.so.0"
+#define GLX_SENTINEL_HANDLE ((void*)1)
 
 OBS_DECLARE_MODULE()
 
@@ -115,17 +127,63 @@ static void video_render(void* data, gs_effect_t* effect) {
     gs_texture_destroy(texture);
 }
 
+static Display* display;
+static EGLDisplay displayEGL;
+static Pixmap dummyPixmap;
+static EGLSurface dummyEGLPixmap;
+
+static void GOFUCKME() {
+
+}
+
 static int capture_thread(void* data) {
     nvfbc_source_t* source_data = (nvfbc_source_t*) data;
     nvfbc_capture_t* capture_data = &source_data->capture_data;
 
+    // create x pixmap
+    display = XOpenDisplay(NULL);
+    displayEGL = eglGetDisplay(display);
+    eglInitialize(displayEGL, NULL, NULL);
+    eglBindAPI(EGL_OPENGL_ES_API);
+
+    EGLConfig config;
+    int num_configs;
+    eglChooseConfig(displayEGL, (EGLint[]) { EGL_SURFACE_TYPE, EGL_PIXMAP_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE }, &config, 1, &num_configs);
+
+    EGLContext context = eglCreateContext(displayEGL, config, EGL_NO_CONTEXT, (EGLint[]) { EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 2, EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE });
+
+    dummyPixmap = XCreatePixmap(display, DefaultRootWindow(display), capture_data->frame_width, capture_data->frame_height, 24);
+    dummyEGLPixmap = eglCreatePixmapSurface(displayEGL, config, dummyPixmap, NULL);
+    eglMakeCurrent(displayEGL, dummyEGLPixmap, dummyEGLPixmap, context);
+
+    printf("gles version: %s\n", glGetString(GL_VERSION));
+
     // create nvfbc
     NVFBC_API_FUNCTION_LIST fbc = { .dwVersion = NVFBC_VERSION };
+    NVFBCSTATUS status = NvFBCCreateInstance(&fbc);
+    if (status) {
+        fprintf(stderr, "Failed to create NvFBC instance\n");
+        return 1;
+    }
+
     NVFBC_SESSION_HANDLE handle;
-    NVFBC_GET_STATUS_PARAMS status = { .dwVersion = NVFBC_GET_STATUS_PARAMS_VER };
-    NvFBCCreateInstance(&fbc);
-    NvFBCCreateHandle(&handle, &(NVFBC_CREATE_HANDLE_PARAMS) { .dwVersion = NVFBC_CREATE_HANDLE_PARAMS_VER });
-    NvFBCGetStatus(handle, &status);
+    status = NvFBCCreateHandle(&handle, &(NVFBC_CREATE_HANDLE_PARAMS) {
+        .dwVersion = NVFBC_CREATE_HANDLE_PARAMS_VER,
+        .bExternallyManagedContext = true,
+        .glxCtx = context,
+        .glxFBConfig = config
+    });
+    if (status) {
+        fprintf(stderr, "Failed to create NvFBC handle: %d\n", status);
+        return 1;
+    }
+
+    NVFBC_GET_STATUS_PARAMS status_params = { .dwVersion = NVFBC_GET_STATUS_PARAMS_VER };
+    status = NvFBCGetStatus(handle, &status_params);
+    if (status) {
+        fprintf(stderr, "Failed to get NvFBC status: %s (%d)\n", NvFBCGetLastErrorStr(handle), status);
+        return 1;
+    }
 
     while (true) {
         if (!source_data->should_run) {
@@ -136,9 +194,9 @@ static int capture_thread(void* data) {
         // find display if using tracking type 1
         int dwOutputId = 0;
         if (capture_data->tracking_type == 1) {
-            for (uint32_t i = 0; i < status.dwOutputNum; i++) {
-                if (strncmp(capture_data->display_name, status.outputs[i].name, 127) == 0) {
-                    dwOutputId = status.outputs[i].dwId;
+            for (uint32_t i = 0; i < status_params.dwOutputNum; i++) {
+                if (strncmp(capture_data->display_name, status_params.outputs[i].name, 127) == 0) {
+                    dwOutputId = status_params.outputs[i].dwId;
                     break;
                 }
             }
@@ -147,7 +205,7 @@ static int capture_thread(void* data) {
         // create capture session
         NVFBC_CREATE_CAPTURE_SESSION_PARAMS session_params = {
             .dwVersion = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER,
-            .eCaptureType = NVFBC_CAPTURE_TO_SYS,
+            .eCaptureType = NVFBC_CAPTURE_TO_GL,
             .bWithCursor = capture_data->with_cursor,
             .eTrackingType = capture_data->tracking_type,
             .frameSize = { .w = capture_data->frame_width, .h = capture_data->frame_height },
@@ -162,25 +220,43 @@ static int capture_thread(void* data) {
             session_params.captureBox.w = capture_data->capture_width;
             session_params.captureBox.h = capture_data->capture_height;
         }
-        fbc.nvFBCCreateCaptureSession(handle, &session_params);
+        GOFUCKME();
+        status = fbc.nvFBCCreateCaptureSession(handle, &session_params);
+        if (status) {
+            fprintf(stderr, "Failed to create NvFBC capture session: %s (%d)\n", NvFBCGetLastErrorStr(handle), status);
+
+            return 1;
+        }
 
         // setup capture session
-        void* buffer;
-        NVFBC_TOSYS_SETUP_PARAMS tosys_params = {
-            .dwVersion = NVFBC_TOSYS_SETUP_PARAMS_VER,
+        //void* buffer;
+        NVFBC_TOGL_SETUP_PARAMS togl_params = {
+            .dwVersion = NVFBC_TOGL_SETUP_PARAMS_VER,
             .eBufferFormat = NVFBC_BUFFER_FORMAT_BGRA,
-            .ppBuffer = &buffer
+            //.ppBuffer = &buffer
         };
-        fbc.nvFBCToSysSetUp(handle, &tosys_params);
+        status = fbc.nvFBCToGLSetUp(handle, &togl_params);
+        if (status) {
+            fprintf(stderr, "Failed to setup NvFBC capture session: %s (%d)\n", NvFBCGetLastErrorStr(handle), status);
+            return 1;
+        }
 
         // capture loop
-        NVFBC_TOSYS_GRAB_FRAME_PARAMS tosys_grab_params = {
-            .dwVersion = NVFBC_TOSYS_GRAB_FRAME_PARAMS_VER,
-            .dwFlags = NVFBC_TOSYS_GRAB_FLAGS_NOWAIT_IF_NEW_FRAME_READY
+        NVFBC_TOGL_GRAB_FRAME_PARAMS togl_grab_params = {
+            .dwVersion = NVFBC_TOGL_GRAB_FRAME_PARAMS_VER,
+            .dwFlags = NVFBC_TOGL_GRAB_FLAGS_NOFLAGS
         };
+        //memset(source_data->frame_ptr, 255, source_data->width * source_data->height * 4);
         while (source_data->should_run) {
-            fbc.nvFBCToSysGrabFrame(handle, &tosys_grab_params);
-            memcpy(source_data->frame_ptr, buffer, source_data->width * source_data->height * 4);
+            status = fbc.nvFBCToGLGrabFrame(handle, &togl_grab_params);
+            if (status) {
+                fprintf(stderr, "Failed to grab NvFBC frame: %s (%d)\n", NvFBCGetLastErrorStr(handle), status);
+                return 1;
+            }
+
+            fprintf(stderr, "grabbed frame: %d\n", togl_grab_params.dwTextureIndex);
+            //glBindTexture(GL_TEXTURE_2D, togl_params.dwTextures[togl_grab_params.dwTextureIndex]);
+            //glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, source_data->width, source_data->height, GL_BGRA, GL_UNSIGNED_BYTE, source_data->frame_ptr);
         }
 
         // cleanup
@@ -339,4 +415,127 @@ struct obs_source_info nvfbc_source = {
 bool obs_module_load(void) {
     obs_register_source(&nvfbc_source);
     return true;
+}
+
+// actual hooks
+
+const GLubyte* glGetString_hook(GLenum name) {
+    const GLubyte* ret = glGetString(name);
+    if (name == GL_EXTENSIONS) {
+        return (GLubyte*) "hewwo :3";
+    }
+    return ret;
+}
+
+void* glXGetProcAddress_hook(const char* name) {
+    void* addr = eglGetProcAddress(name);
+    if (strcmp(name, "glGetString") == 0) {
+        return &glGetString_hook;
+    }
+    fprintf(stderr,"glXGetProcAddress: %s -> %p\n", name, addr);
+    return addr;
+}
+
+EGLSurface glXCreatePixmap_hook(EGLDisplay, EGLConfig, void*, const EGLAttrib*) {
+    return dummyEGLPixmap;
+}
+
+void glXDestroyGLXPixmap_hook(void*, EGLSurface surface) {
+    eglDestroySurface(displayEGL, surface);
+}
+
+Bool glXMakeCurrent_hook(void*, EGLSurface drawable, EGLContext context) {
+    fprintf(stderr, "glXMakeCurrent\n\n\n\n\n\n: %p, %p\n", drawable, context);
+    return eglMakeCurrent(displayEGL, drawable, drawable, context);
+}
+
+// dummy hooks to please nvidia cunts
+void* glXCreateNewContext_hook(void*, void*, int, void*, int) {
+    fprintf(stderr, "[W] call to glXCreateNewContext\n");
+    return NULL;
+}
+
+void glXDestroyContext_hook(void*, void*) {
+    fprintf(stderr, "[W] call to glXDestroyContext_hook\n");
+}
+
+void* glXChooseFBConfig_hook(void*, int, void*, void*) {
+    fprintf(stderr, "[W] call to glXChooseFBConfig_hook\n");
+    return NULL;
+}
+
+// symbol crap
+struct symbol_t {
+    const char* name;
+    void* value;
+};
+
+struct symbol_t symbols[] = {
+    { "glXGetProcAddress", glXGetProcAddress_hook },
+    { "glXCreatePixmap", glXCreatePixmap_hook },
+    { "glXDestroyGLXPixmap", glXDestroyGLXPixmap_hook },
+    { "glXMakeCurrent", glXMakeCurrent_hook },
+    { "glXCreateNewContext", glXCreateNewContext_hook },
+    { "glXDestroyContext", glXDestroyContext_hook },
+    { "glXChooseFBConfig", glXChooseFBConfig_hook }
+};
+
+// hooking crap
+typedef void*(*dlopen_t)(const char* file, int mode);
+typedef void*(*dlsym_t)(void* handle, const char* name);
+typedef int(*dlclose_t)(void* handle);
+
+
+
+dlopen_t dlopen_real;
+dlsym_t dlsym_real;
+dlclose_t dlclose_real;
+
+void dl_hook_init() {
+    static bool is_inited = false;
+    if(is_inited) return;
+
+    is_inited = true;
+    dlopen_real = (dlopen_t)dlvsym(RTLD_NEXT, "dlopen", "GLIBC_2.2.5");
+    dlsym_real = (dlsym_t)dlvsym(RTLD_NEXT, "dlsym", "GLIBC_2.2.5");
+    dlclose_real = (dlclose_t)dlvsym(RTLD_NEXT, "dlclose", "GLIBC_2.2.5");
+}
+
+void* dlopen(const char* file, int mode) {
+    printf("dlopen: %s\n", file);
+    dl_hook_init();
+    if(file && !strcmp(GLX_NAME, file)) {
+        return GLX_SENTINEL_HANDLE;
+    } else {
+        return dlopen_real(file, mode);
+    }
+}
+
+void* dlsym(void* handle, const char* name) {
+    printf("dlsym: %p, %s\n", handle, name);
+    dl_hook_init();
+    if(handle == GLX_SENTINEL_HANDLE) {
+        for(size_t i = 0; i < sizeof(symbols) / sizeof(struct symbol_t); i++) {
+            struct symbol_t* symbol = &symbols[i];
+            if(!strcmp(name, symbol->name)) {
+                fprintf(stderr, "[I] hooked symbol '%s'\n", name);
+                return symbol->value;
+            }
+        }
+
+        fprintf(stderr, "[E] cannot find hooked symbol '%s'\n", name);
+        return NULL;
+    } else {
+        return dlsym_real(handle, name);
+    }
+}
+
+int dlclose(void* handle) {
+    printf("dlclose: %p\n", handle);
+    dl_hook_init();
+    if(handle == GLX_SENTINEL_HANDLE) {
+        return 0;
+    } else {
+        return dlclose_real(handle);
+    }
 }
