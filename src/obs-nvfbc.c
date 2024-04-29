@@ -9,9 +9,8 @@
 #include <ucontext.h>
 #include <threads.h>
 
+#include <vulkan/vulkan.h>
 #include <EGL/egl.h>
-#include <EGL/eglext.h>
-#include <GL/glx.h>
 #include <GL/gl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,10 +24,34 @@
 
 #include <link.h>
 
-#define GLX_NAME "libGLX.so.0"
-#define GLX_SENTINEL_HANDLE ((void*)1)
-
 OBS_DECLARE_MODULE()
+
+// vulkan forward declarations
+
+typedef struct {
+    VkImage image;
+    VkDeviceMemory memory;
+    uint64_t size;
+    int interop_fd;
+} nvfbc_vk_surface;
+
+typedef struct {
+    uint8_t pad1[0x32];
+    VkInstance instance;
+    VkPhysicalDevice gpu;
+    VkDevice device;
+    uint8_t pad2[0x220];
+    VkDeviceMemory shared_area_memory;
+    void* shared_area_memory_ptr;
+    uint8_t pad3[0x8];
+    nvfbc_vk_surface surfaces[3];
+} nvfbc_state;
+
+typedef nvfbc_state* (*FBCGetStateFromHandle_t)(const NVFBC_SESSION_HANDLE handle);
+int get_module_base_callback(struct dl_phdr_info* info, size_t size, void* data_ptr);
+uintptr_t get_module_base(const char* module_name);
+
+// module
 
 typedef struct {
     int tracking_type; //!< Tracking type (default, output, screen)
@@ -49,6 +72,8 @@ typedef struct {
     void* frame_ptr; //!< Frame buffer pointer
 
     obs_source_t* source; //!< OBS source
+    gs_texture_t *textures[2]; //!< OBS texture
+    int active_texture; //!< Active texture
     mtx_t lock; //!< Lock to prevent rendering while updating the frame buffer
     thrd_t thread; //!< Thread to capture frames
     nvfbc_capture_t capture_data; //!< Capture data sent to subprocess
@@ -113,50 +138,18 @@ static void video_render(void* data, gs_effect_t* effect) {
     nvfbc_source_t* source_data = (nvfbc_source_t*) data;
     if (!source_data->should_run) return;
 
-    mtx_lock(&source_data->lock);
-    gs_texture_t* texture = gs_texture_create(source_data->width, source_data->height, GS_BGRA, 1, (const uint8_t **) &source_data->frame_ptr, 0);
-    mtx_unlock(&source_data->lock);
-
     effect = obs_get_base_effect(OBS_EFFECT_OPAQUE);
     gs_eparam_t* image = gs_effect_get_param_by_name(effect, "image");
-    gs_effect_set_texture(image, texture);
+    gs_effect_set_texture(image, source_data->textures[source_data->active_texture]);
 
     while (gs_effect_loop(effect, "Draw"))
-        gs_draw_sprite(texture, 0, source_data->width, source_data->height);
-
-    gs_texture_destroy(texture);
-}
-
-static Display* display;
-static EGLDisplay displayEGL;
-static Pixmap dummyPixmap;
-static EGLSurface dummyEGLPixmap;
-
-static void GOFUCKME() {
-
+        gs_draw_sprite(source_data->textures[source_data->active_texture], 0, source_data->width, source_data->height);
 }
 
 static int capture_thread(void* data) {
     nvfbc_source_t* source_data = (nvfbc_source_t*) data;
     nvfbc_capture_t* capture_data = &source_data->capture_data;
 
-    // create x pixmap
-    display = XOpenDisplay(NULL);
-    displayEGL = eglGetDisplay(display);
-    eglInitialize(displayEGL, NULL, NULL);
-    eglBindAPI(EGL_OPENGL_ES_API);
-
-    EGLConfig config;
-    int num_configs;
-    eglChooseConfig(displayEGL, (EGLint[]) { EGL_SURFACE_TYPE, EGL_PIXMAP_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE }, &config, 1, &num_configs);
-
-    EGLContext context = eglCreateContext(displayEGL, config, EGL_NO_CONTEXT, (EGLint[]) { EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 2, EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE });
-
-    dummyPixmap = XCreatePixmap(display, DefaultRootWindow(display), capture_data->frame_width, capture_data->frame_height, 24);
-    dummyEGLPixmap = eglCreatePixmapSurface(displayEGL, config, dummyPixmap, NULL);
-    eglMakeCurrent(displayEGL, dummyEGLPixmap, dummyEGLPixmap, context);
-
-    printf("gles version: %s\n", glGetString(GL_VERSION));
 
     // create nvfbc
     NVFBC_API_FUNCTION_LIST fbc = { .dwVersion = NVFBC_VERSION };
@@ -168,22 +161,27 @@ static int capture_thread(void* data) {
 
     NVFBC_SESSION_HANDLE handle;
     status = NvFBCCreateHandle(&handle, &(NVFBC_CREATE_HANDLE_PARAMS) {
-        .dwVersion = NVFBC_CREATE_HANDLE_PARAMS_VER,
-        .bExternallyManagedContext = true,
-        .glxCtx = context,
-        .glxFBConfig = config
+        .dwVersion = NVFBC_CREATE_HANDLE_PARAMS_VER
     });
-    if (status) {
-        fprintf(stderr, "Failed to create NvFBC handle: %d\n", status);
-        return 1;
-    }
-
-    NVFBC_GET_STATUS_PARAMS status_params = { .dwVersion = NVFBC_GET_STATUS_PARAMS_VER };
-    status = NvFBCGetStatus(handle, &status_params);
     if (status) {
         fprintf(stderr, "Failed to get NvFBC status: %s (%d)\n", NvFBCGetLastErrorStr(handle), status);
         return 1;
     }
+
+    NVFBC_GET_STATUS_PARAMS status_params = {
+        .dwVersion = NVFBC_GET_STATUS_PARAMS_VER
+    };
+    status = fbc.nvFBCGetStatus(handle, &status_params);
+    if (status) {
+        fprintf(stderr, "Failed to get NvFBC status: %s (%d)\n", NvFBCGetLastErrorStr(handle), status);
+        return 1;
+    }
+
+    // grab vulkan
+    uintptr_t nvfbc_base_addr = get_module_base("libnvidia-fbc.so.1");
+    FBCGetStateFromHandle_t FBCGetStateFromHandle = (FBCGetStateFromHandle_t) (nvfbc_base_addr + 0xCB30);
+    nvfbc_state* state = FBCGetStateFromHandle(handle);
+    VkResult (*vkGetMemoryFdKHR)(VkDevice, const VkMemoryGetFdInfoKHR*, int*) = (void*) vkGetInstanceProcAddr(state->instance, "vkGetMemoryFdKHR");
 
     while (true) {
         if (!source_data->should_run) {
@@ -220,7 +218,6 @@ static int capture_thread(void* data) {
             session_params.captureBox.w = capture_data->capture_width;
             session_params.captureBox.h = capture_data->capture_height;
         }
-        GOFUCKME();
         status = fbc.nvFBCCreateCaptureSession(handle, &session_params);
         if (status) {
             fprintf(stderr, "Failed to create NvFBC capture session: %s (%d)\n", NvFBCGetLastErrorStr(handle), status);
@@ -229,11 +226,9 @@ static int capture_thread(void* data) {
         }
 
         // setup capture session
-        //void* buffer;
         NVFBC_TOGL_SETUP_PARAMS togl_params = {
             .dwVersion = NVFBC_TOGL_SETUP_PARAMS_VER,
             .eBufferFormat = NVFBC_BUFFER_FORMAT_BGRA,
-            //.ppBuffer = &buffer
         };
         status = fbc.nvFBCToGLSetUp(handle, &togl_params);
         if (status) {
@@ -241,12 +236,56 @@ static int capture_thread(void* data) {
             return 1;
         }
 
+        // get gl functions
+        void* (*glCreateMemoryObjectsEXT)(GLsizei, GLuint*) = (void*) eglGetProcAddress("glCreateMemoryObjectsEXT");
+        void* (*glMemoryObjectParameterivEXT)(GLuint, GLenum, const GLint*) = (void*) eglGetProcAddress("glMemoryObjectParameterivEXT");
+        void* (*glImportMemoryFdEXT)(GLuint, GLuint64, GLenum, GLint) = (void*) eglGetProcAddress("glImportMemoryFdEXT");
+        void* (*glTextureStorageMem2DEXT)(GLuint, GLsizei, GLenum, GLsizei, GLsizei, GLuint, GLuint64) = (void*) eglGetProcAddress("glTextureStorageMem2DEXT");
+
+        // fix fds
+        obs_enter_graphics();
+        for (int i = 0; i < 2; i++) {
+            vkGetMemoryFdKHR(state->device, &(VkMemoryGetFdInfoKHR) {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                .pNext = NULL,
+                .memory = state->surfaces[i].memory,
+                .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR
+            }, &state->surfaces[i].interop_fd);
+
+            // create obs texture
+            GLuint mem_obj;
+            glCreateMemoryObjectsEXT(1, &mem_obj);
+            printf("glCreateMemoryObjectsEXT: %d\n", glGetError());
+
+            GLint isDedicated = GL_TRUE;
+            glMemoryObjectParameterivEXT(mem_obj, GL_DEDICATED_MEMORY_OBJECT_EXT, &isDedicated);
+            printf("glMemoryObjectParameterivEXT: %d\n", glGetError());
+
+            glImportMemoryFdEXT(mem_obj, state->surfaces[i].size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, state->surfaces[i].interop_fd);
+            printf("glImportMemoryFdEXT: %d\n", glGetError());
+
+            gs_texture_t* texture = gs_texture_create(capture_data->frame_width, capture_data->frame_height, GS_RGBA, 1, source_data->frame_ptr, 0);
+            source_data->textures[i] = texture;
+            GLuint gl_texture = *(GLuint*) gs_texture_get_obj(texture);
+
+            glBindTexture(GL_TEXTURE_2D, gl_texture);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE);
+            glTextureStorageMem2DEXT(gl_texture, 1, GL_RGBA8, capture_data->frame_width, capture_data->frame_height, mem_obj, 0);
+            printf("glTextureStorageMem2DEXT: %d\n", glGetError());
+
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+        }
+        obs_leave_graphics();
+
         // capture loop
         NVFBC_TOGL_GRAB_FRAME_PARAMS togl_grab_params = {
             .dwVersion = NVFBC_TOGL_GRAB_FRAME_PARAMS_VER,
             .dwFlags = NVFBC_TOGL_GRAB_FLAGS_NOFLAGS
         };
-        //memset(source_data->frame_ptr, 255, source_data->width * source_data->height * 4);
         while (source_data->should_run) {
             status = fbc.nvFBCToGLGrabFrame(handle, &togl_grab_params);
             if (status) {
@@ -254,9 +293,8 @@ static int capture_thread(void* data) {
                 return 1;
             }
 
-            fprintf(stderr, "grabbed frame: %d\n", togl_grab_params.dwTextureIndex);
-            //glBindTexture(GL_TEXTURE_2D, togl_params.dwTextures[togl_grab_params.dwTextureIndex]);
-            //glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, source_data->width, source_data->height, GL_BGRA, GL_UNSIGNED_BYTE, source_data->frame_ptr);
+            printf("Frame grabbed: %d\n", togl_grab_params.dwTextureIndex);
+            source_data->active_texture = togl_grab_params.dwTextureIndex;
         }
 
         // cleanup
@@ -417,79 +455,117 @@ bool obs_module_load(void) {
     return true;
 }
 
-// actual hooks
+// address stuff
 
-const GLubyte* glGetString_hook(GLenum name) {
-    const GLubyte* ret = glGetString(name);
-    if (name == GL_EXTENSIONS) {
-        return (GLubyte*) "hewwo :3";
+struct get_module_base_data_t {
+    const char* module_name;
+    uintptr_t base_address;
+};
+
+int get_module_base_callback(struct dl_phdr_info* info, size_t size, void* data_ptr) {
+    struct get_module_base_data_t* data = (struct get_module_base_data_t*)data_ptr;
+
+    if(info->dlpi_name) {
+        char* base_name = strrchr(info->dlpi_name, '/');
+        if(
+            base_name &&
+            !strcmp(base_name + 1, data->module_name)
+        ) {
+            data->base_address = info->dlpi_addr + info->dlpi_phdr[0].p_vaddr;
+            return 1;
+        }
     }
-    return ret;
+
+    return 0;
+}
+
+uintptr_t get_module_base(const char* module_name) {
+    struct get_module_base_data_t data = { .module_name = module_name, .base_address = 0 };
+    dl_iterate_phdr(get_module_base_callback, (void*)&data);
+    return data.base_address;
+}
+
+// hooking stuff
+
+#define VK_NAME "libvulkan.so.1"
+#define VK_SENTINEL_HANDLE ((void*) 1)
+#define GLX_NAME "libGLX.so.0"
+#define GLX_SENTINEL_HANDLE ((void*) 2)
+
+VkResult vkCreateInstance_hook(VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance) {
+    ((VkApplicationInfo*) pCreateInfo->pApplicationInfo)->apiVersion = VK_API_VERSION_1_3;
+    return vkCreateInstance(pCreateInfo, pAllocator, pInstance);
+}
+
+VkResult vkCreateDevice_hook(VkPhysicalDevice physicalDevice, VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice) {
+    static const char *deviceExtensions[] = {
+        "VK_KHR_external_memory",
+        "VK_KHR_external_memory_fd",
+        "VK_KHR_timeline_semaphore",
+        "VK_KHR_external_semaphore",
+        "VK_KHR_external_semaphore_fd",
+        VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME
+    };
+
+    pCreateInfo->ppEnabledExtensionNames = deviceExtensions;
+    pCreateInfo->enabledExtensionCount = 6;
+    return vkCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
+}
+
+VkResult vkGetPhysicalDeviceImageFormatProperties2_hook(VkPhysicalDevice physicalDevice, VkPhysicalDeviceImageFormatInfo2* pImageFormatInfo, VkImageFormatProperties2* pImageFormatProperties) {
+    pImageFormatInfo->usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
+    return vkGetPhysicalDeviceImageFormatProperties2(physicalDevice, pImageFormatInfo, pImageFormatProperties);
+}
+
+VkResult vkCreateImage_hook(VkDevice device, VkImageCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkImage* pImage) {
+    VkImageCreateInfo newCreateInfo = *pCreateInfo;
+    newCreateInfo.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
+    return vkCreateImage(device, &newCreateInfo, pAllocator, pImage);
+}
+
+void* vkGetInstanceProcAddr_hook(VkInstance instance, const char* pName) {
+    if (pName && !strcmp(pName, "vkCreateInstance"))
+        return vkCreateInstance_hook;
+    if (pName && !strcmp(pName, "vkCreateDevice"))
+        return vkCreateDevice_hook;
+    if (pName && !strcmp(pName, "vkGetPhysicalDeviceImageFormatProperties2"))
+        return vkGetPhysicalDeviceImageFormatProperties2_hook;
+    if (pName && !strcmp(pName, "vkCreateImage"))
+        return vkCreateImage_hook;
+    return vkGetInstanceProcAddr(instance, pName);
+}
+
+char* glGetString_hook() {
+    return "hewwo :3";
+}
+
+void* gl_stub() {
+    return NULL;
 }
 
 void* glXGetProcAddress_hook(const char* name) {
-    void* addr = eglGetProcAddress(name);
-    if (strcmp(name, "glGetString") == 0) {
-        return &glGetString_hook;
-    }
-    fprintf(stderr,"glXGetProcAddress: %s -> %p\n", name, addr);
-    return addr;
+    if (!strcmp(name, "glGetString"))
+        return glGetString_hook;
+    return gl_stub;
 }
 
-EGLSurface glXCreatePixmap_hook(EGLDisplay, EGLConfig, void*, const EGLAttrib*) {
-    return dummyEGLPixmap;
+int glX_stub() {
+    return 1;
 }
 
-void glXDestroyGLXPixmap_hook(void*, EGLSurface surface) {
-    eglDestroySurface(displayEGL, surface);
-}
+void* dlopen(const char* file, int mode);
+void* dlsym(void* handle, const char* name);
+int dlclose(void* handle);
 
-Bool glXMakeCurrent_hook(void*, EGLSurface drawable, EGLContext context) {
-    fprintf(stderr, "glXMakeCurrent\n\n\n\n\n\n: %p, %p\n", drawable, context);
-    return eglMakeCurrent(displayEGL, drawable, drawable, context);
-}
-
-// dummy hooks to please nvidia cunts
-void* glXCreateNewContext_hook(void*, void*, int, void*, int) {
-    fprintf(stderr, "[W] call to glXCreateNewContext\n");
-    return NULL;
-}
-
-void glXDestroyContext_hook(void*, void*) {
-    fprintf(stderr, "[W] call to glXDestroyContext_hook\n");
-}
-
-void* glXChooseFBConfig_hook(void*, int, void*, void*) {
-    fprintf(stderr, "[W] call to glXChooseFBConfig_hook\n");
-    return NULL;
-}
-
-// symbol crap
-struct symbol_t {
-    const char* name;
-    void* value;
-};
-
-struct symbol_t symbols[] = {
-    { "glXGetProcAddress", glXGetProcAddress_hook },
-    { "glXCreatePixmap", glXCreatePixmap_hook },
-    { "glXDestroyGLXPixmap", glXDestroyGLXPixmap_hook },
-    { "glXMakeCurrent", glXMakeCurrent_hook },
-    { "glXCreateNewContext", glXCreateNewContext_hook },
-    { "glXDestroyContext", glXDestroyContext_hook },
-    { "glXChooseFBConfig", glXChooseFBConfig_hook }
-};
-
-// hooking crap
 typedef void*(*dlopen_t)(const char* file, int mode);
 typedef void*(*dlsym_t)(void* handle, const char* name);
 typedef int(*dlclose_t)(void* handle);
 
-
-
 dlopen_t dlopen_real;
 dlsym_t dlsym_real;
 dlclose_t dlclose_real;
+void* vkhandle_real;
+void* glxhandle_real;
 
 void dl_hook_init() {
     static bool is_inited = false;
@@ -502,9 +578,12 @@ void dl_hook_init() {
 }
 
 void* dlopen(const char* file, int mode) {
-    printf("dlopen: %s\n", file);
     dl_hook_init();
-    if(file && !strcmp(GLX_NAME, file)) {
+    if(file && !strcmp(VK_NAME, file)) {
+        vkhandle_real = dlopen_real(file, mode);
+        return VK_SENTINEL_HANDLE;
+    } else if (file && !strcmp(GLX_NAME, file)) {
+        glxhandle_real = dlopen_real(file, mode);
         return GLX_SENTINEL_HANDLE;
     } else {
         return dlopen_real(file, mode);
@@ -512,29 +591,28 @@ void* dlopen(const char* file, int mode) {
 }
 
 void* dlsym(void* handle, const char* name) {
-    printf("dlsym: %p, %s\n", handle, name);
     dl_hook_init();
-    if(handle == GLX_SENTINEL_HANDLE) {
-        for(size_t i = 0; i < sizeof(symbols) / sizeof(struct symbol_t); i++) {
-            struct symbol_t* symbol = &symbols[i];
-            if(!strcmp(name, symbol->name)) {
-                fprintf(stderr, "[I] hooked symbol '%s'\n", name);
-                return symbol->value;
-            }
-        }
-
-        fprintf(stderr, "[E] cannot find hooked symbol '%s'\n", name);
-        return NULL;
+    if(handle == VK_SENTINEL_HANDLE) {
+        if (!strcmp(name, "vkGetInstanceProcAddr"))
+            return vkGetInstanceProcAddr_hook;
+        return dlsym_real(vkhandle_real, name);
+    } else if (handle == GLX_SENTINEL_HANDLE) {
+        if (!strcmp(name, "glXGetProcAddress"))
+            return glXGetProcAddress_hook;
+        else if (!strcmp(name, "glXCreateNewContext") || !strcmp(name, "glXMakeCurrent") || !strcmp(name, "glXDestroyContext"))
+            return glX_stub;
+        return dlsym_real(glxhandle_real, name);
     } else {
         return dlsym_real(handle, name);
     }
 }
 
 int dlclose(void* handle) {
-    printf("dlclose: %p\n", handle);
     dl_hook_init();
-    if(handle == GLX_SENTINEL_HANDLE) {
-        return 0;
+    if(handle == VK_SENTINEL_HANDLE) {
+        return dlclose_real(vkhandle_real);
+    } else if (handle == GLX_SENTINEL_HANDLE) {
+        return dlclose_real(glxhandle_real);
     } else {
         return dlclose_real(handle);
     }
