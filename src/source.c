@@ -120,7 +120,7 @@ static bool on_reload(obs_properties_t*, obs_property_t *, void *data) {
     // create textures
     obs_enter_graphics();
     for (int i = 0; i < 2; i++) {
-        gs_texture_t* texture = gs_texture_create(params->frame_width, params->frame_height, GS_BGRA, 1, NULL, GS_DYNAMIC); // FIXME (potential bug): check if "NULL" works
+        gs_texture_t* texture = gs_texture_create(params->frame_width, params->frame_height, GS_BGRA, 1, NULL, GS_DYNAMIC);
         if (!texture) {
             blog(LOG_ERROR, "Failed to create texture for nvfbc obs source");
             return false;
@@ -221,15 +221,12 @@ static void render(void* data, gs_effect_t* effect) {
     // capture a frame
     capture_callback(&source_data->params);
 
-    // TODO: check if this is how it's supposed to be done
-
+    // render the frame
     effect = obs_get_base_effect(OBS_EFFECT_OPAQUE);
-    gs_eparam_t* image = gs_effect_get_param_by_name(effect, "image");
-    gs_effect_set_texture(image, source_data->textures[source_data->params.current_texture]);
+    gs_effect_set_texture(gs_effect_get_param_by_name(effect, "image"), source_data->textures[source_data->params.current_texture]);
 
     while (gs_effect_loop(effect, "Draw"))
         gs_draw_sprite(source_data->textures[source_data->params.current_texture], 0, source_data->params.frame_width, source_data->params.frame_height);
-
 }
 
 /**
@@ -282,7 +279,7 @@ static obs_properties_t* get_properties(void* unused) {
     obs_property_list_add_string(prop, "Primary Screen", "0");
     obs_property_list_add_string(prop, "Entire X Screen", "2");
 
-    // TODO: replace with NvFBC
+    // output list
     xcb_connection_t* conn = xcb_connect(NULL, NULL);
     xcb_randr_get_monitors_reply_t* monitors = xcb_randr_get_monitors_reply(conn, xcb_randr_get_monitors(conn, xcb_setup_roots_iterator(xcb_get_setup(conn)).data->root, 1), NULL);
     xcb_randr_monitor_info_iterator_t iter = xcb_randr_get_monitors_monitors_iterator(monitors);
