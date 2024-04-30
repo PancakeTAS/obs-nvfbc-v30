@@ -24,6 +24,9 @@ typedef struct {
 /**
  * Register the source
  *
+ * \author
+ *   PancakeTAS
+ *
  * \param start_callback
  *   Callback to start capturing
  * \param capture_callback

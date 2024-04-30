@@ -20,6 +20,9 @@ static void (*stop_callback)(capture_params*); //!< Callback to stop capturing
 /**
  * Return name of the source
  *
+ * \author
+ *   PancakeTAS
+ *
  * \return
  *   Name of the source
  */
@@ -29,6 +32,9 @@ static const char* get_name(void* unused) {
 
 /**
  * Return width of the source
+ *
+ * \author
+ *   PancakeTAS
  *
  * \param data
  *   Source data
@@ -40,6 +46,9 @@ static uint32_t get_width(void* data) {
 /**
  * Return height of the source
  *
+ * \author
+ *   PancakeTAS
+ *
  * \param data
  *   Source data
  */
@@ -49,6 +58,15 @@ static uint32_t get_height(void* data) {
 
 /**
  * Reload source on reload click
+ *
+ * \author
+ *   PancakeTAS
+ *
+ * \param data
+ *   Source data
+ *
+ * \return
+ *  True if the source was reloaded successfully, false otherwise
  */
 static bool on_reload(obs_properties_t*, obs_property_t *, void *data) {
     fbc_source* source_data = (fbc_source*) data;
@@ -135,6 +153,9 @@ static bool on_reload(obs_properties_t*, obs_property_t *, void *data) {
 /**
  * Update source data
  *
+ * \author
+ *   PancakeTAS
+ *
  * \param data
  *   Source data
  * \param settings
@@ -164,6 +185,9 @@ static void update(void* data, obs_data_t* settings) {
 /**
  * Create and update new source
  *
+ * \author
+ *   PancakeTAS
+ *
  * \param settings
  *   Settings of the source
  * \param source
@@ -180,6 +204,9 @@ static void* create(obs_data_t* settings, obs_source_t* source) {
 
 /**
  * Render the source
+ *
+ * \author
+ *   PancakeTAS
  *
  * \param data
  *   Source data
@@ -208,6 +235,9 @@ static void render(void* data, gs_effect_t* effect) {
 /**
  * Update properties window on direct_update click
  *
+ * \author
+ *   PancakeTAS
+ *
  * \param props
  *   Properties of the source
  * \param settings
@@ -222,6 +252,9 @@ static bool on_direct_update(obs_properties_t* props, obs_property_t*, obs_data_
 /**
  * Update properties window on crop click
  *
+ * \author
+ *   PancakeTAS
+ *
  * \param props
  *   Properties of the source
  * \param settings
@@ -234,6 +267,9 @@ static bool on_crop_update(obs_properties_t* props, obs_property_t*, obs_data_t*
 
 /**
  * Return properties of the source
+ *
+ * \author
+ *   PancakeTAS
  *
  * \return
  *   Properties of the source
@@ -293,6 +329,9 @@ static obs_properties_t* get_properties(void* unused) {
 /**
  * Set default values for the source
  *
+ * \author
+ *   PancakeTAS
+ *
  * \param settings
  *   Settings of the source
  */
@@ -318,6 +357,9 @@ static void get_defaults(obs_data_t* settings) {
 
 /**
  * Destroy the source
+ *
+ * \author
+ *   PancakeTAS
  *
  * \param data
  *   Source data

@@ -4,9 +4,8 @@
 #include <stdint.h>
 #include <NvFBC.h>
 
-// TODO: remove unused stuff
 typedef struct {
-    VkImage image;
+    uint8_t pad1[0x8];
     VkDeviceMemory memory;
     uint64_t size;
     int interop_fd;
@@ -15,17 +14,17 @@ typedef struct {
 typedef struct {
     uint8_t pad1[0x32];
     VkInstance instance;
-    VkPhysicalDevice gpu;
+    uint8_t pad2[0x8];
     VkDevice device;
-    uint8_t pad2[0x220];
-    VkDeviceMemory shared_area_memory;
-    void* shared_area_memory_ptr;
-    uint8_t pad3[0x8];
-    NvFBCVkSurface surfaces[3];
+    uint8_t pad3[0x238];
+    NvFBCVkSurface surfaces[2];
 } NvFBCState; //!< NvFBC state
 
 /**
  * Get the base address of a module
+ *
+ * \author
+ *   0xNULLderef
  *
  * \param module_name
  *   The name of the module to get the base address of
@@ -34,6 +33,9 @@ uintptr_t get_module_base(const char* module_name);
 
 /**
  * Get NvFBCState from session handle
+ *
+ * \author
+ *   0xNULLderef
  *
  * \param session
  *   The NvFBC session handle

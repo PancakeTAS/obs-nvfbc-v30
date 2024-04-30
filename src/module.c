@@ -22,6 +22,15 @@ void* (*glImportMemoryFdEXT)(GLuint, GLuint64, GLenum, GLint) = NULL; //!< glImp
 void* (*glTextureStorageMem2DEXT)(GLuint, GLsizei, GLenum, GLsizei, GLsizei, GLuint, GLuint64) = NULL; //!< glTextureStorageMem2DEXT function pointer
 void* (*glDeleteMemoryObjectsEXT)(GLsizei, const GLuint*) = NULL; //!< glDeleteMemoryObjectsEXT function pointer
 
+/**
+ * Start capture
+ *
+ * \author
+ *   PancakeTAS
+ *
+ * \param params
+ *   Capture parameters
+ */
 void start_capture(capture_params* params) {
     blog(LOG_INFO, "Starting capture");
 
@@ -136,6 +145,15 @@ void start_capture(capture_params* params) {
 
 }
 
+/**
+ * Capture frame
+ *
+ * \author
+ *   PancakeTAS
+ *
+ * \param params
+ *   Capture parameters
+ */
 void capture_frame(capture_params* params) {
     nvfbc_user* user_data = (nvfbc_user*) params->user_data;
 
@@ -168,6 +186,15 @@ void capture_frame(capture_params* params) {
     params->current_texture = grab_params.dwTextureIndex;
 }
 
+/**
+ * Stop capture
+ *
+ * \author
+ *   PancakeTAS
+ *
+ * \param params
+ *  Capture parameters
+ */
 void stop_capture(capture_params* params) {
     blog(LOG_INFO, "Stopping capture");
     nvfbc_user* user_data = (nvfbc_user*) params->user_data;
@@ -205,6 +232,9 @@ void stop_capture(capture_params* params) {
 
 /**
  * Module load function
+ *
+ * \author
+ *   PancakeTAS
  *
  * \return
  *   True if the module loaded successfully, false otherwise

@@ -1,5 +1,6 @@
 # object files
 *.so
+*.o
 
 # vscode stuff
 .vscode

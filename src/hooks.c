@@ -18,6 +18,9 @@ int glXStub() { return 1; }
 /**
  * Hook glXGetProcAddress to nullify NvFBCs OpenGL calls
  *
+ * \author
+ *   0xNULLderef
+ *
  * \param name
  *   The name of the function to get
  */
@@ -42,6 +45,9 @@ void* glxhandle_real; //!< Handle to the real libGLX.so.0
 
 /**
  * Initialize the hooking mechanism
+ *
+ * \author
+ *   0xNULLderef
  */
 void dl_hook_init() {
     if (dlopen_real)
@@ -54,6 +60,9 @@ void dl_hook_init() {
 
 /**
  * Hook dlopen to intercept libGLX.so.0
+ *
+ * \author
+ *   0xNULLderef
  *
  * \param file
  *   The file to open
@@ -72,6 +81,9 @@ void* dlopen(const char* file, int mode) {
 
 /**
  * Hook dlsym to intercept glXGetProcAddress
+ *
+ * \author
+ *   0xNULLderef
  *
  * \param handle
  *   The handle to search in
@@ -93,6 +105,9 @@ void* dlsym(void* handle, const char* name) {
 
 /**
  * Hook dlclose to intercept libGLX.so.0
+ *
+ * \author
+ *   0xNULLderef
  *
  * \param handle
  *   The handle to close
@@ -130,6 +145,9 @@ static int get_module_base_callback(struct dl_phdr_info* info, size_t size, void
 
 /**
  * Get the base address of a module
+ *
+ * \author
+ *   0xNULLderef
  *
  * \param module_name
  *   The name of the module to get the base address of
