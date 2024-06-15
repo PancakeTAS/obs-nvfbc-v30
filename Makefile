@@ -1,7 +1,7 @@
 SOURCES = $(wildcard src/*.c)
 OBJECTS = $(SOURCES:.c=.o)
 
-TARGET = obs-nvfbc.so
+TARGET = obs-nvfbc
 
 CC = gcc
 CFLAGS = -Wno-unused-parameter -Wall -Wextra -std=gnu17 -Iinclude -fPIC
@@ -18,20 +18,20 @@ endif
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(TARGET): $(OBJECTS)
+$(TARGET).so: $(OBJECTS)
 	$(CC) $(CFLAGS) $(LIBS) $(LDFLAGS) $^ -o $@
 
-link: $(TARGET)
+link: $(TARGET).so
 	mkdir -p "$(HOME)/.config/obs-studio/plugins/$(TARGET)/bin/64bit"
-	ln -s "$(PWD)/$(TARGET)" "$(HOME)/.config/obs-studio/plugins/$(TARGET)/bin/64bit/$(TARGET)"
+	ln -s "$(PWD)/$(TARGET).so" "$(HOME)/.config/obs-studio/plugins/$(TARGET)/bin/64bit/$(TARGET).so"
 
-run: $(TARGET)
+run: $(TARGET).so
 	obs
 
-debug: $(TARGET)
+debug: $(TARGET).so
 	gdb obs
 
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -f $(OBJECTS) $(TARGET).so
 
 .PHONY: link run debug clean
