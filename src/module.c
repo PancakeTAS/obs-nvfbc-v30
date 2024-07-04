@@ -10,7 +10,6 @@ OBS_DECLARE_MODULE()
 
 typedef struct {
     NVFBC_SESSION_HANDLE session; //!< NvFBC session handle
-    NvFBCState* state; //!< NvFBC state
     GLuint memory_objects[2]; //!< Memory objects
 } nvfbc_user; //!< NvFBC user data
 
@@ -43,9 +42,6 @@ void start_capture(capture_params* params) {
         blog(LOG_ERROR, "Failed to create NvFBC session: %d", status);
         return;
     }
-
-    // get nvfbc_state
-    user_data->state = get_nvfb_state(user_data->session);
 
     // get NvFBC status
     NVFBC_GET_STATUS_PARAMS status_params = { .dwVersion = NVFBC_GET_STATUS_PARAMS_VER };
@@ -103,17 +99,17 @@ void start_capture(capture_params* params) {
     }
 
     // get vulkan method pointer
-    VkResult (*vkGetMemoryFdKHR)(VkDevice, const VkMemoryGetFdInfoKHR*, int*) = (void*) vkGetInstanceProcAddr(user_data->state->instance, "vkGetMemoryFdKHR");
+    VkResult (*vkGetMemoryFdKHR)(VkDevice, const VkMemoryGetFdInfoKHR*, int*) = (void*) vkGetInstanceProcAddr(gstate.instance, "vkGetMemoryFdKHR");
 
     // hook textures
     int fd;
     int glstatus;
     for (int i = 0; i < 2; i++) {
         // grab vulkan memory fd
-        vkGetMemoryFdKHR(user_data->state->device, &(VkMemoryGetFdInfoKHR) {
+        vkGetMemoryFdKHR(gstate.device, &(VkMemoryGetFdInfoKHR) {
             .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
             .pNext = NULL,
-            .memory = user_data->state->surfaces[i].memory,
+            .memory = gstate.memory[i],
             .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR
         }, &fd);
 
@@ -124,7 +120,7 @@ void start_capture(capture_params* params) {
             return;
         }
         glMemoryObjectParameterivEXT(user_data->memory_objects[i], GL_DEDICATED_MEMORY_OBJECT_EXT, &(GLint) { GL_TRUE });
-        glImportMemoryFdEXT(user_data->memory_objects[i], user_data->state->surfaces[i].size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
+        glImportMemoryFdEXT(user_data->memory_objects[i], gstate.size[i], GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
         if ((glstatus = glGetError())) {
             blog(LOG_ERROR, "Failed to import memory fd: %d", glstatus);
             return;

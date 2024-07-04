@@ -6,9 +6,12 @@
 #include <stdio.h>
 #include <dlfcn.h>
 #include <link.h>
+#include <vulkan/vulkan.h>
 
 #define GLX_NAME "libGLX.so.0"
+#define VK_NAME "libvulkan.so.1"
 #define GLX_SENTINEL_HANDLE ((void*) 1)
+#define VK_SENTINEL_HANDLE ((void*) 2)
 
 // stubs
 char* glGetStringStub() { return "hewwo :3"; }
@@ -30,6 +33,53 @@ void* glXGetProcAddress_hook(const char* name) {
     return glStub;
 }
 
+PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr_real; //!< Real vkGetInstanceProcAddr function
+PFN_vkCreateDevice vkCreateDevice_real; //!< Real vkCreateDevice function
+PFN_vkAllocateMemory vkAllocateMemory_real; //!< Real vkAllocateMemory function
+
+NvFBCCustomState gstate; //!< Global state
+int gstate_index = 0; //!< Index of the fd inside the global state
+
+VkResult vkCreateDevice_hook(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice) {
+    VkResult res = vkCreateDevice_real(physicalDevice, pCreateInfo, pAllocator, pDevice);
+    gstate.device = *pDevice;
+    return res;
+}
+
+VkResult vkAllocateMemory_hook(VkDevice device, const VkMemoryAllocateInfo* pAllocateInfo, const VkAllocationCallbacks* pAllocator, VkDeviceMemory* pMemory) {
+    VkResult res = vkAllocateMemory_real(device, pAllocateInfo, pAllocator, pMemory);
+    if (pAllocateInfo->allocationSize > 10000) {
+        gstate.memory[gstate_index] = *pMemory;
+        gstate.size[gstate_index] = pAllocateInfo->allocationSize;
+        gstate_index++;
+
+        if (gstate_index == 2)
+            gstate_index = 0;
+    }
+    return res;
+}
+
+/**
+ * Hook vkGetInstanceProcAddr to hack with Vulkan
+ *
+ * \author
+ *   Pancake
+ *
+ */
+void* vkGetInstanceProcAddr_hook(VkInstance instance, const char* name) {
+    gstate.instance = instance;
+
+    if (!strcmp(name, "vkCreateDevice")) {
+        vkCreateDevice_real = (PFN_vkCreateDevice) vkGetInstanceProcAddr_real(instance, name);
+        return (void*) vkCreateDevice_hook;
+    } else if (!strcmp(name, "vkAllocateMemory")) {
+        vkAllocateMemory_real = (PFN_vkAllocateMemory) vkGetInstanceProcAddr_real(instance, name);
+        return (void*) vkAllocateMemory_hook;
+    }
+
+    return vkGetInstanceProcAddr_real(instance, name);
+}
+
 void* dlopen(const char* file, int mode);
 void* dlsym(void* handle, const char* name);
 int dlclose(void* handle);
@@ -42,6 +92,7 @@ dlopen_t dlopen_real; //!< Original dlopen function
 dlsym_t dlsym_real; //!< Original dlsym function
 dlclose_t dlclose_real; //!< Original dlclose function
 void* glxhandle_real; //!< Handle to the real libGLX.so.0
+void* vkhandle_real; //!< Handle to the real libvulkan.so.1
 
 /**
  * Initialize the hooking mechanism
@@ -74,6 +125,9 @@ void* dlopen(const char* file, int mode) {
     if (file && !strcmp(GLX_NAME, file)) {
         glxhandle_real = dlopen_real(file, mode);
         return GLX_SENTINEL_HANDLE;
+    } else if (file && !strcmp(VK_NAME, file)) {
+        vkhandle_real = dlopen_real(file, mode);
+        return VK_SENTINEL_HANDLE;
     } else {
         return dlopen_real(file, mode);
     }
@@ -98,6 +152,12 @@ void* dlsym(void* handle, const char* name) {
         else if (!strcmp(name, "glXCreateNewContext") || !strcmp(name, "glXMakeCurrent") || !strcmp(name, "glXDestroyContext"))
             return glXStub;
         return dlsym_real(glxhandle_real, name);
+    } else if (handle == VK_SENTINEL_HANDLE) {
+        if (!strcmp(name, "vkGetInstanceProcAddr")) {
+            vkGetInstanceProcAddr_real = (PFN_vkGetInstanceProcAddr) dlsym_real(vkhandle_real, name);
+            return vkGetInstanceProcAddr_hook;
+        }
+        return dlsym_real(vkhandle_real, name);
     } else {
         return dlsym_real(handle, name);
     }
@@ -116,56 +176,9 @@ int dlclose(void* handle) {
     dl_hook_init();
     if (handle == GLX_SENTINEL_HANDLE) {
         return dlclose_real(glxhandle_real);
+    } else if (handle == VK_SENTINEL_HANDLE) {
+        return dlclose_real(vkhandle_real);
     } else {
         return dlclose_real(handle);
     }
-}
-
-struct get_module_base_data_t {
-    const char* module_name;
-    uintptr_t base_address;
-};
-
-static int get_module_base_callback(struct dl_phdr_info* info, size_t size, void* data_ptr) {
-    struct get_module_base_data_t* data = (struct get_module_base_data_t*)data_ptr;
-
-    if(info->dlpi_name) {
-        char* base_name = strrchr(info->dlpi_name, '/');
-        if(
-            base_name &&
-            !strcmp(base_name + 1, data->module_name)
-        ) {
-            data->base_address = info->dlpi_addr + info->dlpi_phdr[0].p_vaddr;
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
-/**
- * Get the base address of a module
- *
- * \author
- *   0xNULLderef
- *
- * \param module_name
- *   The name of the module to get the base address of
- *
- * \return
- *   The base address of the module
- */
-uintptr_t get_module_base(const char* module_name) {
-    struct get_module_base_data_t data = { .module_name = module_name, .base_address = 0 };
-    dl_iterate_phdr(get_module_base_callback, (void*)&data);
-    return data.base_address;
-}
-
-#define NVFBC_LIB "libnvidia-fbc.so.1"
-#define NVFBC_OFFSET 0xCB30 // offset of FBCGetStateFromHandle in NvFBC
-
-NvFBCState* get_nvfb_state(NVFBC_SESSION_HANDLE session) {
-    uintptr_t base = get_module_base(NVFBC_LIB);
-    NvFBCState* (*FBCGetStateFromHandle)(const NVFBC_SESSION_HANDLE) = (void*) (base + NVFBC_OFFSET);
-    return FBCGetStateFromHandle(session);
 }
