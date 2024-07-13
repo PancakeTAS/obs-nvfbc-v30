@@ -19,7 +19,7 @@ endif
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(TARGET).so: $(OBJECTS)
-	$(CC) $(CFLAGS) $(LIBS) $(LDFLAGS) $^ -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LIBS) -o $@
 
 link: $(TARGET).so
 	mkdir -p "$(HOME)/.config/obs-studio/plugins/$(TARGET)/bin/64bit"
