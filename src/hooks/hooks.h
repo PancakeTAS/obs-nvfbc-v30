@@ -12,14 +12,3 @@ typedef struct {
 } NvFBCCustomState;
 
 extern NvFBCCustomState gstate;
-
-/**
- * Get the base address of a module
- *
- * \author
- *   0xNULLderef
- *
- * \param module_name
- *   The name of the module to get the base address of
- */
-uintptr_t get_module_base(const char* module_name);

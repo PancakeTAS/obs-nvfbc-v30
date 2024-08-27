@@ -15,6 +15,9 @@ CFLAGS += -O3 -march=native -mtune=native
 LDLAGS += -flto=auto
 endif
 
+preload.so: src/hooks/hooks.c
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o preload.so -ldl
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -26,10 +29,10 @@ link: $(TARGET).so
 	ln -s "$(PWD)/$(TARGET).so" "$(HOME)/.config/obs-studio/plugins/$(TARGET)/bin/64bit/$(TARGET).so"
 
 run: $(TARGET).so
-	obs
+	LD_PRELOAD=$$PWD/preload.so obs
 
 debug: $(TARGET).so
-	gdb obs
+	LD_PRELOAD=$$PWD/preload.so gdb obs
 
 clean:
 	rm -f $(OBJECTS) $(TARGET).so

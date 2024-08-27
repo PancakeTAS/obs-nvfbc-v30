@@ -122,6 +122,16 @@ void dl_hook_init() {
  */
 void* dlopen(const char* file, int mode) {
     dl_hook_init();
+
+    // check if call is from nvfbc
+    void* ret = __builtin_extract_return_addr(__builtin_return_address(0));
+    Dl_info info;
+    dladdr(ret, &info);
+    if (!strstr(info.dli_fname, "libnvidia-fbc")) {
+        return dlopen_real(file, mode);
+    }
+    printf("\ndlopen on %s\n", file);
+
     if (file && !strcmp(GLX_NAME, file)) {
         glxhandle_real = dlopen_real(file, mode);
         return GLX_SENTINEL_HANDLE;
@@ -147,12 +157,14 @@ void* dlopen(const char* file, int mode) {
 void* dlsym(void* handle, const char* name) {
     dl_hook_init();
     if (handle == GLX_SENTINEL_HANDLE) {
+        printf("\ndlsym on %p %s\n", handle, name);
         if (!strcmp(name, "glXGetProcAddress"))
             return glXGetProcAddress_hook;
         else if (!strcmp(name, "glXCreateNewContext") || !strcmp(name, "glXMakeCurrent") || !strcmp(name, "glXDestroyContext"))
             return glXStub;
         return dlsym_real(glxhandle_real, name);
     } else if (handle == VK_SENTINEL_HANDLE) {
+        printf("\ndlsym on %p %s\n", handle, name);
         if (!strcmp(name, "vkGetInstanceProcAddr")) {
             vkGetInstanceProcAddr_real = (PFN_vkGetInstanceProcAddr) dlsym_real(vkhandle_real, name);
             return vkGetInstanceProcAddr_hook;
