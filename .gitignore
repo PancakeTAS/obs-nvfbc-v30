@@ -1,6 +1,6 @@
-# object files
-*.so
-*.o
+# cmake build directory
+/build
 
-# vscode stuff
-.vscode
+# user-specific vscode files
+/.vscode
+/.cache

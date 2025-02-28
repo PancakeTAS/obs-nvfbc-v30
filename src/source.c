@@ -26,7 +26,8 @@ static void (*stop_callback)(capture_params*); //!< Callback to stop capturing
  * \return
  *   Name of the source
  */
-static const char* get_name(void* unused) {
+static const char* get_name(void* u) {
+    (void) u;
     return "NvFBC Source";
 }
 
@@ -68,7 +69,10 @@ static uint32_t get_height(void* data) {
  * \return
  *  True if the source was reloaded successfully, false otherwise
  */
-static bool on_reload(obs_properties_t*, obs_property_t *, void *data) {
+static bool on_reload(obs_properties_t* u, obs_property_t* v, void *data) {
+    (void) u;
+    (void) v;
+
     fbc_source* source_data = (fbc_source*) data;
 
     // stop the source
@@ -240,7 +244,8 @@ static void render(void* data, gs_effect_t* effect) {
  * \param settings
  *   Settings of the source
  */
-static bool on_direct_update(obs_properties_t* props, obs_property_t*, obs_data_t* settings) {
+static bool on_direct_update(obs_properties_t* props, obs_property_t* u, obs_data_t* settings) {
+    (void) u;
     obs_property_set_visible(obs_properties_get(props, "with_cursor"), !obs_data_get_bool(settings, "direct_capture"));
     obs_property_set_visible(obs_properties_get(props, "sampling_rate"), !obs_data_get_bool(settings, "direct_capture"));
     return true;
@@ -257,7 +262,8 @@ static bool on_direct_update(obs_properties_t* props, obs_property_t*, obs_data_
  * \param settings
  *   Settings of the source
  */
-static bool on_crop_update(obs_properties_t* props, obs_property_t*, obs_data_t* settings) {
+static bool on_crop_update(obs_properties_t* props, obs_property_t* u, obs_data_t* settings) {
+    (void) u;
     obs_property_set_visible(obs_properties_get(props, "capture_area"), obs_data_get_bool(settings, "crop_area"));
     return true;
 }
@@ -271,7 +277,9 @@ static bool on_crop_update(obs_properties_t* props, obs_property_t*, obs_data_t*
  * \return
  *   Properties of the source
  */
-static obs_properties_t* get_properties(void* unused) {
+static obs_properties_t* get_properties(void* u) {
+    (void) u;
+
     obs_properties_t* props = obs_properties_create();
 
     // tracking type
