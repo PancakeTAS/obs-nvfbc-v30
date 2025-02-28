@@ -13,7 +13,7 @@ file(GLOB SOURCES "src/*.c")
 include_directories(include)
 
 add_library(obs-nvfbc SHARED ${SOURCES})
-target_link_libraries(obs-nvfbc nvidia-fbc dl vulkan obs EGL)
+target_link_libraries(obs-nvfbc nvidia-fbc dl vulkan obs xcb-randr EGL)
 
 add_library(obs-nvfbc-pre MODULE src/hooks/hooks.c)
 target_link_libraries(obs-nvfbc-pre dl)
