@@ -7,8 +7,8 @@ NvFBC is an API provided by NVIDIA to capture the frame buffer without using x11
 Patched NVIDIA driver with NvFBC enabled. You can find the patch [here](https://github.com/keylase/nvidia-patch).
 
 > [!CAUTION]
-> NvFBC on driver versions 560.35.03 or newer seems to be broken at the moment. This could be because of NVIDIA adding a pipewire backend, or the NvFBC patch not working anymore (https://github.com/keylase/nvidia-patch/issues/889).
-> Stick to the 555.58.02 or older versions if you want to use this plugin.
+> NvFBC on driver versions 560.X and 565.X does not work due to the NvFBC patch being incorrect (https://github.com/keylase/nvidia-patch/issues/889).
+> Stick to either 555.58.02 (or older) or 570.86.15 (or newer) versions if you want to use this plugin.
 
 ## Installation
 Unfortunately installing this plugin is not as straight forward as any other plugin, as NvFBC is loaded _before_ the plugin, making patches effectively useless. Follow this guide closely:
@@ -38,7 +38,7 @@ Before you open an issue, please make sure you aren't running into any of these 
 Scroll up a bit, this error is most likely caused by some previous stuff failing.
 
 ### `Failed to create NvFBC session: 7` in the console.
-This means NvFBC is not supported on your system. Did you apply the patch properly? Is your driver version supported (555 or older)?
+This means NvFBC is not supported on your system. Did you apply the patch properly? Is your driver version supported (555 or older, 570 or newer)?
 
 If all of this is the case, check if [NVIDIA's Capture SDK](https://developer.nvidia.com/capture-sdk) samples are working for you (run `make` in any of the samples and then execute the file). If those work, then what the heck is wrong with your system (=> Open an issue). If those don't work, idk bother NVIDIA support or something (=> Don't, just open an issue).
 
