@@ -81,7 +81,8 @@ void start_capture(capture_params* params) {
         .dwOutputId = dwOutputId,
         .dwSamplingRateMs = params->sampling_rate,
         .bPushModel = params->push_model,
-        .bAllowDirectCapture = params->direct_mode
+        .bAllowDirectCapture = params->direct_mode,
+        .bDisableAutoModesetRecovery = NVFBC_TRUE
     });
     if (status) {
         blog(LOG_ERROR, "Failed to create NvFBC capture session: %d", status);
