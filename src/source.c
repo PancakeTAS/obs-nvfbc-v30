@@ -14,7 +14,7 @@ typedef struct {
 } fbc_source; //!< NvFBC source data
 
 static void (*start_callback)(capture_params*); //!< Callback to start capturing
-static void (*capture_callback)(capture_params*); //!< Callback to capture a frame
+static bool (*capture_callback)(capture_params*); //!< Callback to capture a frame
 static void (*stop_callback)(capture_params*); //!< Callback to stop capturing
 
 /**
@@ -223,7 +223,23 @@ static void render(void* data, gs_effect_t* effect) {
         return;
 
     // capture a frame
-    capture_callback(&source_data->params);
+    bool success = capture_callback(&source_data->params);
+    if (!success) {
+        // check what to do in this situation
+        obs_data_t* settings = obs_source_get_settings(source_data->source);
+        bool nuclear = obs_data_get_bool(settings, "nuclear");
+        if (nuclear) {
+            // attempt to recreate the capture
+            on_reload(NULL, NULL, source_data);
+        } else {
+            // stop the capture
+            source_data->is_capturing = false;
+            gs_texture_destroy(source_data->textures[0]);
+            gs_texture_destroy(source_data->textures[1]);
+            stop_callback(&source_data->params);
+        }
+        return;
+    }
 
     // render the frame
     effect = obs_get_base_effect(OBS_EFFECT_OPAQUE);
@@ -326,6 +342,7 @@ static obs_properties_t* get_properties(void* u) {
     obs_properties_add_int(resize_props, "sampling_rate", "Track Interval (ms)", 0, 1000, 1);
     obs_properties_add_group(props, "frame_size", "Frame Size", OBS_GROUP_NORMAL, resize_props);
 
+    obs_properties_add_bool(props, "nuclear", "Attempt to recover from errors (NUCLEAR!)");
     obs_properties_add_button(props, "settings", "Update settings", on_reload);
 
     return props;
@@ -357,6 +374,7 @@ static void get_defaults(obs_data_t* settings) {
 
     // misc capture options
     obs_data_set_default_bool(settings, "with_cursor", true);
+    obs_data_set_default_bool(settings, "nuclear", false);
     obs_data_set_default_int(settings, "sampling_rate", 16);
 }
 
@@ -410,7 +428,7 @@ static struct obs_source_info nvfbc_source = {
     .get_height = get_height,
 };
 
-void register_fbc_source(void(*new_start_callback)(capture_params*), void(*new_capture_callback)(capture_params*), void(*new_stop_callback)(capture_params*)) {
+void register_fbc_source(void(*new_start_callback)(capture_params*), bool(*new_capture_callback)(capture_params*), void(*new_stop_callback)(capture_params*)) {
     start_callback = new_start_callback;
     capture_callback = new_capture_callback;
     stop_callback = new_stop_callback;

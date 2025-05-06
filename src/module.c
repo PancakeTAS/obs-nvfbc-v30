@@ -151,14 +151,14 @@ void start_capture(capture_params* params) {
  * \param params
  *   Capture parameters
  */
-void capture_frame(capture_params* params) {
+bool capture_frame(capture_params* params) {
     nvfbc_user* user_data = (nvfbc_user*) params->user_data;
 
     // bind context
     NVFBCSTATUS status = fbc.nvFBCBindContext(user_data->session, &(NVFBC_BIND_CONTEXT_PARAMS) { .dwVersion = NVFBC_BIND_CONTEXT_PARAMS_VER });
     if (status) {
         blog(LOG_ERROR, "Failed to bind NvFBC context: %d", status);
-        return;
+        return true; // pretend this is success so we don't aimlessly recreate the session
     }
 
     // capture frame
@@ -169,18 +169,19 @@ void capture_frame(capture_params* params) {
     status = fbc.nvFBCToGLGrabFrame(user_data->session, &grab_params);
     if (status) {
         blog(LOG_ERROR, "Failed to grab NvFBC frame: %d", status);
-        return;
+        return false;
     }
 
     // release context
     status = fbc.nvFBCReleaseContext(user_data->session, &(NVFBC_RELEASE_CONTEXT_PARAMS) { .dwVersion = NVFBC_RELEASE_CONTEXT_PARAMS_VER });
     if (status) {
         blog(LOG_ERROR, "Failed to release NvFBC context: %d", status);
-        return;
+        return true;
     }
 
     // switch textures
     params->current_texture = grab_params.dwTextureIndex;
+    return true;
 }
 
 /**
