@@ -34,4 +34,4 @@ typedef struct {
  * \param stop_callback
  *   Callback to stop capturing
  */
-void register_fbc_source(void(*start_callback)(capture_params*), void(*capture_callback)(capture_params*), void(*stop_callback)(capture_params*));
+void register_fbc_source(void(*start_callback)(capture_params*), bool(*capture_callback)(capture_params*), void(*stop_callback)(capture_params*));
