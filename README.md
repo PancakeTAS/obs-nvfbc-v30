@@ -13,10 +13,11 @@ Patched NVIDIA driver with NvFBC enabled. You can find the patch [here](https://
 ## Installation
 Unfortunately installing this plugin is not as straight forward as any other plugin, as NvFBC is loaded _before_ the plugin, making patches effectively useless. Follow this guide closely:
 1. Clone the repository and open a terminal inside of it
-2. Build the project using `cmake -B build && make -C build`.
+2. Install required packages for building the project `sudo apt install libvulkan-dev libegl1-mesa-dev libxcb-randr0-dev`
+3. Build the project using `cmake -B build && make -C build`.
 This will create two files `build/libobs-nvfbc.so` and `build/libobs-nvfbc-pre.so`.
-3. Copy the first file (`libobs-nvfbc.so`) into your OBS Studio plugin directory, which is usually located at `~/.config/obs-studio/plugins/bin/64bit`
-4. Copy the second file `libobs-nvfbc-pre.so` to wherever you like and note down the path (e.g. `/home/pancake/.nvfbc/libobs-nvfbc-pre.so`).
+4. Copy the first file (`libobs-nvfbc.so`) into your OBS Studio plugin directory, which is usually located at `~/.config/obs-studio/plugins/bin/64bit`
+5. Copy the second file `libobs-nvfbc-pre.so` to wherever you like and note down the path (e.g. `/home/pancake/.nvfbc/libobs-nvfbc-pre.so`).
 
 With that the installation is done, but in order for the plugin to actually work you have to **preload** the `libobs-nvfbc-pre.so` file. This is done by setting `LD_PRELOAD=""` to the path of the `.so` file before running obs (e.g. `LD_PRELOAD="/home/pancake/.nvfbc/libobs-nvfbc-pre.so" obs`).
 
